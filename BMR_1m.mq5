@@ -16,6 +16,8 @@
 input group "Indicators"
 input int InpFastEMAPeriod = 10;  // Fast EMA period
 input int InpSlowEMAPeriod = 20;  // Slow EMA period (width 2)
+input color InpFastEMAColor = clrMediumOrchid; // Fast EMA color
+input color InpSlowEMAColor = clrDarkTurquoise; // Slow EMA color
 input int InpDisplayBars   = 300; // Number of bars to draw
 input int InpATRPeriod     = 14;  // ATR period for divergence filter
 input int InpStochKPeriod  = 5;   // Stochastic %K period
@@ -353,6 +355,8 @@ int OnInit()
    SetIndexBuffer(1, SlowEMABuffer, INDICATOR_DATA);
    PlotIndexSetInteger(0, PLOT_DRAW_BEGIN, InpFastEMAPeriod - 1);
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, InpSlowEMAPeriod - 1);
+   PlotIndexSetInteger(0, PLOT_LINE_COLOR, InpFastEMAColor);
+   PlotIndexSetInteger(1, PLOT_LINE_COLOR, InpSlowEMAColor);
    IndicatorSetString(INDICATOR_SHORTNAME, "BMR_1m");
 
    FastHandle = iMA(_Symbol, PERIOD_CURRENT, InpFastEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
