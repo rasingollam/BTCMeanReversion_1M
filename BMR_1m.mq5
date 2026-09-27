@@ -1,5 +1,5 @@
 #property copyright "BMR_1m"
-#property version   "1.33"
+#property version   "1.40"
 #property description "Displays SMAs, Stochastic, and confirmed swing highs and lows."
 
 input group "Indicators"
@@ -83,6 +83,47 @@ void DrawSwingDots()
             ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
             ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
          }
+      }
+   }
+
+   double stoch[];
+   ArraySetAsSeries(stoch, true);
+   if(StochWindow < 0 || CopyBuffer(StochHandle, 0, 0, count, stoch) != count)
+      return;
+   for(int i = InpSwingStrength + 1;
+       i < count - InpSwingStrength && i <= InpDisplayBars; ++i)
+   {
+      if(stoch[i] == EMPTY_VALUE)
+         continue;
+      bool swing_high = true;
+      bool swing_low = true;
+      for(int j = 1; j <= InpSwingStrength; ++j)
+      {
+         if(stoch[i - j] == EMPTY_VALUE || stoch[i + j] == EMPTY_VALUE)
+         {
+            swing_high = false;
+            swing_low = false;
+            break;
+         }
+         if(stoch[i] <= stoch[i - j] || stoch[i] <= stoch[i + j])
+            swing_high = false;
+         if(stoch[i] >= stoch[i - j] || stoch[i] >= stoch[i + j])
+            swing_low = false;
+      }
+      if(!swing_high && !swing_low)
+         continue;
+      const string name = DOT_PREFIX + "Stoch_" +
+                          (swing_high ? "High_" : "Low_") +
+                          IntegerToString((long)times[i]);
+      if(ObjectCreate(0, name, OBJ_TEXT, StochWindow, times[i], stoch[i]))
+      {
+         ObjectSetString(0, name, OBJPROP_TEXT, ShortToString(0x25CF));
+         ObjectSetString(0, name, OBJPROP_FONT, "Arial");
+         ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 9);
+         ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_CENTER);
+         ObjectSetInteger(0, name, OBJPROP_COLOR, swing_high ? clrRed : clrLime);
+         ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
       }
    }
 }
