@@ -1,6 +1,8 @@
 #property copyright "BMR_1m"
-#property version   "1.70"
+#property version   "1.80"
 #property description "Displays EMAs, Stochastic, swings, and early ATR-filtered divergences."
+
+#include <Trade/Trade.mqh>
 
 input group "Indicators"
 input int InpFastEMAPeriod = 10;  // Fast EMA period
@@ -12,6 +14,10 @@ input int InpStochDPeriod  = 3;   // Stochastic %D period
 input int InpStochSlowing  = 3;   // Stochastic slowing
 input int InpSwingStrength = 2;   // Closed bars on each side of a swing
 
+input group "Trading"
+input double InpRiskMoney   = 10.0; // Risk per trade in USD
+input double InpRiskReward  = 1.0;  // Reward divided by risk
+
 const string LINE_PREFIX = "BMR_1m_EMA_";
 const string DOT_PREFIX = "BMR_1m_Swing_";
 const string DIV_PREFIX = "BMR_1m_Divergence_";
@@ -22,6 +28,9 @@ int ATRHandle = INVALID_HANDLE;
 int StochWindow = -1;
 string StochName = "";
 datetime LastBarTime = 0;
+datetime LastTradeBarTime = 0;
+bool AllowTradeThisBar = false;
+CTrade Trade;
 
 void DeleteLines()
 {
@@ -60,6 +69,86 @@ void DrawDivergenceLine(const string name, const int window,
    ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+}
+
+void OpenDivergenceTrade(const bool buy, const double swing_stop)
+{
+   if(!AllowTradeThisBar || PositionSelect(_Symbol))
+      return;
+   if(AccountInfoString(ACCOUNT_CURRENCY) != "USD")
+   {
+      Print("Trade skipped: the risk input is in USD, but the account currency is not USD.");
+      return;
+   }
+
+   MqlTick tick;
+   if(!SymbolInfoTick(_Symbol, tick))
+      return;
+   const double entry = buy ? tick.ask : tick.bid;
+   const double stop = NormalizeDouble(swing_stop, _Digits);
+   const double stop_distance = buy ? entry - stop : stop - entry;
+   const double broker_distance =
+      (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
+   if(stop_distance <= 0.0 ||
+      (buy && stop >= tick.bid - broker_distance) ||
+      (!buy && stop <= tick.ask + broker_distance))
+   {
+      Print("Trade skipped: swing stop is invalid or too close to market price.");
+      return;
+   }
+
+   const double take_profit = NormalizeDouble(
+      buy ? entry + stop_distance * InpRiskReward
+          : entry - stop_distance * InpRiskReward, _Digits);
+   if((buy && take_profit <= tick.bid + broker_distance) ||
+      (!buy && take_profit >= tick.ask - broker_distance))
+   {
+      Print("Trade skipped: take profit is too close to market price.");
+      return;
+   }
+
+   const double min_volume = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   const double max_volume = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   const double volume_step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(min_volume <= 0.0 || max_volume < min_volume || volume_step <= 0.0)
+      return;
+
+   const ENUM_ORDER_TYPE order_type = buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   double min_volume_profit = 0.0;
+   if(!OrderCalcProfit(order_type, _Symbol, min_volume, entry, stop,
+                       min_volume_profit) || min_volume_profit >= 0.0)
+   {
+      PrintFormat("Trade skipped: could not calculate stop loss risk (error %d).",
+                  GetLastError());
+      return;
+   }
+   const double raw_volume = InpRiskMoney * min_volume / -min_volume_profit;
+   double volume = MathFloor(raw_volume / volume_step + 1e-9) * volume_step;
+   volume = MathMin(volume, MathFloor(max_volume / volume_step) * volume_step);
+   volume = NormalizeDouble(volume, 8);
+   if(volume < min_volume)
+   {
+      Print("Trade skipped: minimum lot size would exceed the risk amount.");
+      return;
+   }
+
+   double expected_loss = 0.0;
+   if(!OrderCalcProfit(order_type, _Symbol, volume, entry, stop, expected_loss) ||
+      expected_loss >= 0.0 || -expected_loss > InpRiskMoney + 0.01)
+   {
+      Print("Trade skipped: calculated loss exceeds the risk amount.");
+      return;
+   }
+
+   const bool sent = buy
+      ? Trade.Buy(volume, _Symbol, entry, stop, take_profit, "BMR bullish divergence")
+      : Trade.Sell(volume, _Symbol, entry, stop, take_profit, "BMR bearish divergence");
+   if(!sent || Trade.ResultDeal() == 0)
+      PrintFormat("Divergence order failed: %s", Trade.ResultRetcodeDescription());
+   else
+      PrintFormat("%s divergence trade opened: %.8f lots, SL %.*f, TP %.*f, estimated risk %.2f USD.",
+                  buy ? "Bullish" : "Bearish", volume, _Digits, stop,
+                  _Digits, take_profit, -expected_loss);
 }
 
 void DrawSwingDots()
@@ -294,6 +383,8 @@ void DrawSwingDots()
                DrawDivergenceLine(DIV_PREFIX + "EarlyBullStoch_" + id, StochWindow,
                                   times[stoch_previous], stoch[stoch_previous],
                                   times[i], stoch[i], clrLime);
+               if(i == 1)
+                  OpenDivergenceTrade(true, lows[i]);
             }
          }
       }
@@ -324,6 +415,8 @@ void DrawSwingDots()
                DrawDivergenceLine(DIV_PREFIX + "EarlyBearStoch_" + id, StochWindow,
                                   times[stoch_previous], stoch[stoch_previous],
                                   times[i], stoch[i], clrRed);
+               if(i == 1)
+                  OpenDivergenceTrade(false, highs[i]);
             }
          }
       }
@@ -389,7 +482,7 @@ int OnInit()
    if(InpFastEMAPeriod < 1 || InpSlowEMAPeriod < 1 || InpDisplayBars < 2 ||
       InpATRPeriod < 1 ||
       InpStochKPeriod < 1 || InpStochDPeriod < 1 || InpStochSlowing < 1 ||
-      InpSwingStrength < 1)
+      InpSwingStrength < 1 || InpRiskMoney <= 0.0 || InpRiskReward <= 0.0)
    {
       Print("Indicator periods and swing strength must be positive; display bars must be at least 2.");
       return INIT_PARAMETERS_INCORRECT;
@@ -414,13 +507,21 @@ int OnInit()
    }
    StochName = ChartIndicatorName(0, StochWindow,
                                   ChartIndicatorsTotal(0, StochWindow) - 1);
+   Trade.SetExpertMagicNumber(110020);
+   Trade.SetTypeFillingBySymbol(_Symbol);
    DrawEMAs();
+   LastTradeBarTime = iTime(_Symbol, PERIOD_CURRENT, 0);
    return INIT_SUCCEEDED;
 }
 
 void OnTick()
 {
+   const datetime current_bar = iTime(_Symbol, PERIOD_CURRENT, 0);
+   AllowTradeThisBar = (current_bar != 0 && current_bar != LastTradeBarTime);
    DrawEMAs();
+   if(LastBarTime == current_bar)
+      LastTradeBarTime = current_bar;
+   AllowTradeThisBar = false;
 }
 
 void OnDeinit(const int reason)
