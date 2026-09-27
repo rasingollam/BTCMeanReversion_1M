@@ -1,8 +1,17 @@
 #property copyright "BMR_1m"
-#property version   "1.90"
-#property description "Trades confirmed ATR-filtered divergences with an EMA expansion filter."
-
-#include <Trade/Trade.mqh>
+#property version   "2.00"
+#property description "Displays EMAs, Stochastic, swings, and ATR-filtered divergences."
+#property indicator_chart_window
+#property indicator_buffers 2
+#property indicator_plots   2
+#property indicator_label1  "Fast EMA"
+#property indicator_type1   DRAW_LINE
+#property indicator_color1  clrMediumOrchid
+#property indicator_width1  1
+#property indicator_label2  "Slow EMA"
+#property indicator_type2   DRAW_LINE
+#property indicator_color2  clrDarkTurquoise
+#property indicator_width2  2
 
 input group "Indicators"
 input int InpFastEMAPeriod = 10;  // Fast EMA period
@@ -14,13 +23,10 @@ input int InpStochDPeriod  = 3;   // Stochastic %D period
 input int InpStochSlowing  = 3;   // Stochastic slowing
 input int InpSwingStrength = 2;   // Closed bars on each side of a swing
 
-input group "Trading"
-input double InpRiskMoney   = 10.0; // Risk per trade in USD
-input double InpRiskReward  = 1.0;  // Reward divided by risk
-
-const string LINE_PREFIX = "BMR_1m_EMA_";
 const string DOT_PREFIX = "BMR_1m_Swing_";
 const string DIV_PREFIX = "BMR_1m_Divergence_";
+double FastEMABuffer[];
+double SlowEMABuffer[];
 int FastHandle = INVALID_HANDLE;
 int SlowHandle = INVALID_HANDLE;
 int StochHandle = INVALID_HANDLE;
@@ -28,14 +34,6 @@ int ATRHandle = INVALID_HANDLE;
 int StochWindow = -1;
 string StochName = "";
 datetime LastBarTime = 0;
-datetime LastTradeBarTime = 0;
-bool AllowTradeThisBar = false;
-CTrade Trade;
-
-void DeleteLines()
-{
-   ObjectsDeleteAll(0, LINE_PREFIX);
-}
 
 int NearestPivot(const int &pivots[], const int pivot_count,
                  const int target, const int max_distance)
@@ -71,109 +69,14 @@ void DrawDivergenceLine(const string name, const int window,
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
 }
 
-void OpenDivergenceTrade(const bool buy, const double swing_stop)
-{
-   if(!AllowTradeThisBar || PositionSelect(_Symbol))
-      return;
-   if(AccountInfoString(ACCOUNT_CURRENCY) != "USD")
-   {
-      Print("Trade skipped: the risk input is in USD, but the account currency is not USD.");
-      return;
-   }
-
-   MqlTick tick;
-   if(!SymbolInfoTick(_Symbol, tick))
-      return;
-   const double entry = buy ? tick.ask : tick.bid;
-   const double stop = NormalizeDouble(swing_stop, _Digits);
-   const double stop_distance = buy ? entry - stop : stop - entry;
-   const double broker_distance =
-      (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
-   if(stop_distance <= 0.0 ||
-      (buy && stop >= tick.bid - broker_distance) ||
-      (!buy && stop <= tick.ask + broker_distance))
-   {
-      Print("Trade skipped: swing stop is invalid or too close to market price.");
-      return;
-   }
-
-   const double take_profit = NormalizeDouble(
-      buy ? entry + stop_distance * InpRiskReward
-          : entry - stop_distance * InpRiskReward, _Digits);
-   if((buy && take_profit <= tick.bid + broker_distance) ||
-      (!buy && take_profit >= tick.ask - broker_distance))
-   {
-      Print("Trade skipped: take profit is too close to market price.");
-      return;
-   }
-
-   const double min_volume = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   const double max_volume = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
-   const double volume_step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-   if(min_volume <= 0.0 || max_volume < min_volume || volume_step <= 0.0)
-      return;
-
-   const ENUM_ORDER_TYPE order_type = buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-   double min_volume_profit = 0.0;
-   if(!OrderCalcProfit(order_type, _Symbol, min_volume, entry, stop,
-                       min_volume_profit) || min_volume_profit >= 0.0)
-   {
-      PrintFormat("Trade skipped: could not calculate stop loss risk (error %d).",
-                  GetLastError());
-      return;
-   }
-   const double raw_volume = InpRiskMoney * min_volume / -min_volume_profit;
-   double volume = MathFloor(raw_volume / volume_step + 1e-9) * volume_step;
-   volume = MathMin(volume, MathFloor(max_volume / volume_step) * volume_step);
-   volume = NormalizeDouble(volume, 8);
-   if(volume < min_volume)
-   {
-      Print("Trade skipped: minimum lot size would exceed the risk amount.");
-      return;
-   }
-
-   double expected_loss = 0.0;
-   if(!OrderCalcProfit(order_type, _Symbol, volume, entry, stop, expected_loss) ||
-      expected_loss >= 0.0 || -expected_loss > InpRiskMoney + 0.01)
-   {
-      Print("Trade skipped: calculated loss exceeds the risk amount.");
-      return;
-   }
-
-   const bool sent = buy
-      ? Trade.Buy(volume, _Symbol, entry, stop, take_profit, "BMR bullish divergence")
-      : Trade.Sell(volume, _Symbol, entry, stop, take_profit, "BMR bearish divergence");
-   if(!sent || Trade.ResultDeal() == 0)
-      PrintFormat("Divergence order failed: %s", Trade.ResultRetcodeDescription());
-   else
-      PrintFormat("%s divergence trade opened: %.8f lots, SL %.*f, TP %.*f, estimated risk %.2f USD.",
-                  buy ? "Bullish" : "Bearish", volume, _Digits, stop,
-                  _Digits, take_profit, -expected_loss);
-}
-
-bool EMAsExpanding(const bool buy, const double &fast_ema[],
-                   const double &slow_ema[])
-{
-   if(fast_ema[1] == EMPTY_VALUE || fast_ema[2] == EMPTY_VALUE ||
-      slow_ema[1] == EMPTY_VALUE || slow_ema[2] == EMPTY_VALUE)
-      return false;
-   if(buy)
-      return fast_ema[1] < slow_ema[1] &&
-             fast_ema[1] < fast_ema[2] && slow_ema[1] < slow_ema[2] &&
-             slow_ema[1] - fast_ema[1] > slow_ema[2] - fast_ema[2];
-   return fast_ema[1] > slow_ema[1] &&
-          fast_ema[1] > fast_ema[2] && slow_ema[1] > slow_ema[2] &&
-          fast_ema[1] - slow_ema[1] > fast_ema[2] - slow_ema[2];
-}
-
-void DrawSwingDots()
+bool DrawSwingDots()
 {
    ObjectsDeleteAll(0, DOT_PREFIX);
    ObjectsDeleteAll(0, DIV_PREFIX);
    const int count = MathMin(InpDisplayBars + 2 * InpSwingStrength + 1,
                              Bars(_Symbol, PERIOD_CURRENT));
    if(count < 2 * InpSwingStrength + 2)
-      return;
+      return false;
 
    datetime times[];
    double highs[];
@@ -187,7 +90,7 @@ void DrawSwingDots()
       CopyHigh(_Symbol, PERIOD_CURRENT, 0, count, highs) != count ||
       CopyLow(_Symbol, PERIOD_CURRENT, 0, count, lows) != count ||
       CopyClose(_Symbol, PERIOD_CURRENT, 0, count, closes) != count)
-      return;
+      return false;
 
    int price_highs[];
    int price_lows[];
@@ -242,7 +145,7 @@ void DrawSwingDots()
    double stoch[];
    ArraySetAsSeries(stoch, true);
    if(StochWindow < 0 || CopyBuffer(StochHandle, 0, 0, count, stoch) != count)
-      return;
+      return false;
    int stoch_highs[];
    int stoch_lows[];
    int stoch_high_count = 0;
@@ -299,7 +202,7 @@ void DrawSwingDots()
    if(CopyBuffer(FastHandle, 0, 0, count, fast_ema) != count ||
       CopyBuffer(SlowHandle, 0, 0, count, slow_ema) != count ||
       CopyBuffer(ATRHandle, 0, 0, count, atr) != count)
-      return;
+      return false;
 
    const int match_distance = InpSwingStrength;
    for(int p = 0; p + 1 < price_low_count; ++p)
@@ -325,9 +228,6 @@ void DrawSwingDots()
          DrawDivergenceLine(DIV_PREFIX + "BullStoch_" + id, StochWindow,
                             times[stoch_older], stoch[stoch_older],
                             times[stoch_newer], stoch[stoch_newer], clrLime);
-         if(MathMin(newer, stoch_newer) == InpSwingStrength + 1 &&
-            EMAsExpanding(true, fast_ema, slow_ema))
-            OpenDivergenceTrade(true, lows[newer]);
       }
    }
    for(int p = 0; p + 1 < price_high_count; ++p)
@@ -353,65 +253,89 @@ void DrawSwingDots()
          DrawDivergenceLine(DIV_PREFIX + "BearStoch_" + id, StochWindow,
                             times[stoch_older], stoch[stoch_older],
                             times[stoch_newer], stoch[stoch_newer], clrRed);
-         if(MathMin(newer, stoch_newer) == InpSwingStrength + 1 &&
-            EMAsExpanding(false, fast_ema, slow_ema))
-            OpenDivergenceTrade(false, highs[newer]);
       }
    }
-}
 
-void DrawSegment(const string name, const datetime start_time, const double start_price,
-                 const datetime end_time, const double end_price,
-                 const color line_color, const int line_width)
-{
-   if(ObjectFind(0, name) < 0 &&
-      !ObjectCreate(0, name, OBJ_TREND, 0, start_time, start_price, end_time, end_price))
-      return;
-   ObjectMove(0, name, 0, start_time, start_price);
-   ObjectMove(0, name, 1, end_time, end_price);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, line_color);
-   ObjectSetInteger(0, name, OBJPROP_WIDTH, line_width);
-   ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
-   ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
-   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-}
-
-void DrawEMAs()
-{
-   const int count = MathMin(InpDisplayBars + 1, Bars(_Symbol, PERIOD_CURRENT));
-   if(count < MathMax(InpFastEMAPeriod, InpSlowEMAPeriod) + 1)
-      return;
-
-   datetime times[];
-   double fast[];
-   double slow[];
-   ArraySetAsSeries(times, true);
-   ArraySetAsSeries(fast, true);
-   ArraySetAsSeries(slow, true);
-   if(CopyTime(_Symbol, PERIOD_CURRENT, 0, count, times) != count ||
-      CopyBuffer(FastHandle, 0, 0, count, fast) != count ||
-      CopyBuffer(SlowHandle, 0, 0, count, slow) != count)
-      return;
-
-   const bool new_bar = (times[0] != LastBarTime);
-   if(new_bar)
+   // Check the newest closed candles before they have enough right-hand bars
+   // to become confirmed swings. These provisional lines are recalculated
+   // on each new bar and are replaced by confirmed lines when eligible.
+   for(int i = 1; i <= InpSwingStrength && i + InpSwingStrength < count; ++i)
    {
-      DeleteLines();
-      LastBarTime = times[0];
-      DrawSwingDots();
+      if(stoch[i] == EMPTY_VALUE || atr[i] == EMPTY_VALUE || atr[i] <= 0.0 ||
+         fast_ema[i] == EMPTY_VALUE || slow_ema[i] == EMPTY_VALUE)
+         continue;
+
+      bool new_low = true;
+      bool new_high = true;
+      for(int j = 1; j <= InpSwingStrength; ++j)
+      {
+         if(lows[i] >= lows[i + j])
+            new_low = false;
+         if(highs[i] <= highs[i + j])
+            new_high = false;
+      }
+
+      if(new_low && closes[i] < fast_ema[i] - atr[i] &&
+         closes[i] < slow_ema[i] - atr[i])
+      {
+         int previous = -1;
+         for(int p = 0; p < price_low_count; ++p)
+         {
+            if(price_lows[p] > i + InpSwingStrength)
+            {
+               previous = price_lows[p];
+               break;
+            }
+         }
+         if(previous >= 0)
+         {
+            const int stoch_previous = NearestPivot(stoch_lows, stoch_low_count,
+                                                    previous, match_distance);
+            if(stoch_previous >= 0 && lows[i] < lows[previous] &&
+               stoch[i] > stoch[stoch_previous])
+            {
+               const string id = IntegerToString((long)times[i]);
+               DrawDivergenceLine(DIV_PREFIX + "EarlyBullPrice_" + id, 0,
+                                  times[previous], lows[previous], times[i], lows[i],
+                                  clrLime);
+               DrawDivergenceLine(DIV_PREFIX + "EarlyBullStoch_" + id, StochWindow,
+                                  times[stoch_previous], stoch[stoch_previous],
+                                  times[i], stoch[i], clrLime);
+            }
+         }
+      }
+
+      if(new_high && closes[i] > fast_ema[i] + atr[i] &&
+         closes[i] > slow_ema[i] + atr[i])
+      {
+         int previous = -1;
+         for(int p = 0; p < price_high_count; ++p)
+         {
+            if(price_highs[p] > i + InpSwingStrength)
+            {
+               previous = price_highs[p];
+               break;
+            }
+         }
+         if(previous >= 0)
+         {
+            const int stoch_previous = NearestPivot(stoch_highs, stoch_high_count,
+                                                    previous, match_distance);
+            if(stoch_previous >= 0 && highs[i] > highs[previous] &&
+               stoch[i] < stoch[stoch_previous])
+            {
+               const string id = IntegerToString((long)times[i]);
+               DrawDivergenceLine(DIV_PREFIX + "EarlyBearPrice_" + id, 0,
+                                  times[previous], highs[previous], times[i], highs[i],
+                                  clrRed);
+               DrawDivergenceLine(DIV_PREFIX + "EarlyBearStoch_" + id, StochWindow,
+                                  times[stoch_previous], stoch[stoch_previous],
+                                  times[i], stoch[i], clrRed);
+            }
+         }
+      }
    }
-   const int oldest = new_bar ? count - 2 : 0;
-   for(int i = oldest; i >= 0; --i)
-   {
-      if(fast[i + 1] != EMPTY_VALUE && fast[i] != EMPTY_VALUE)
-         DrawSegment(LINE_PREFIX + "Fast_" + IntegerToString(i),
-                     times[i + 1], fast[i + 1], times[i], fast[i], clrDodgerBlue, 1);
-      if(slow[i + 1] != EMPTY_VALUE && slow[i] != EMPTY_VALUE)
-         DrawSegment(LINE_PREFIX + "Slow_" + IntegerToString(i),
-                     times[i + 1], slow[i + 1], times[i], slow[i], clrOrange, 2);
-   }
-   ChartRedraw();
+   return true;
 }
 
 int OnInit()
@@ -419,11 +343,17 @@ int OnInit()
    if(InpFastEMAPeriod < 1 || InpSlowEMAPeriod < 1 || InpDisplayBars < 2 ||
       InpATRPeriod < 1 ||
       InpStochKPeriod < 1 || InpStochDPeriod < 1 || InpStochSlowing < 1 ||
-      InpSwingStrength < 1 || InpRiskMoney <= 0.0 || InpRiskReward <= 0.0)
+      InpSwingStrength < 1)
    {
       Print("Indicator periods and swing strength must be positive; display bars must be at least 2.");
       return INIT_PARAMETERS_INCORRECT;
    }
+
+   SetIndexBuffer(0, FastEMABuffer, INDICATOR_DATA);
+   SetIndexBuffer(1, SlowEMABuffer, INDICATOR_DATA);
+   PlotIndexSetInteger(0, PLOT_DRAW_BEGIN, InpFastEMAPeriod - 1);
+   PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, InpSlowEMAPeriod - 1);
+   IndicatorSetString(INDICATOR_SHORTNAME, "BMR_1m");
 
    FastHandle = iMA(_Symbol, PERIOD_CURRENT, InpFastEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
    SlowHandle = iMA(_Symbol, PERIOD_CURRENT, InpSlowEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
@@ -444,26 +374,31 @@ int OnInit()
    }
    StochName = ChartIndicatorName(0, StochWindow,
                                   ChartIndicatorsTotal(0, StochWindow) - 1);
-   Trade.SetExpertMagicNumber(110020);
-   Trade.SetTypeFillingBySymbol(_Symbol);
-   DrawEMAs();
-   LastTradeBarTime = iTime(_Symbol, PERIOD_CURRENT, 0);
    return INIT_SUCCEEDED;
 }
 
-void OnTick()
+int OnCalculate(const int rates_total, const int prev_calculated,
+                const datetime &time[], const double &open[], const double &high[],
+                const double &low[], const double &close[], const long &tick_volume[],
+                const long &volume[], const int &spread[])
 {
+   if(rates_total < MathMax(InpFastEMAPeriod, InpSlowEMAPeriod))
+      return 0;
+   if(CopyBuffer(FastHandle, 0, 0, rates_total, FastEMABuffer) != rates_total ||
+      CopyBuffer(SlowHandle, 0, 0, rates_total, SlowEMABuffer) != rates_total)
+      return prev_calculated;
+
    const datetime current_bar = iTime(_Symbol, PERIOD_CURRENT, 0);
-   AllowTradeThisBar = (current_bar != 0 && current_bar != LastTradeBarTime);
-   DrawEMAs();
-   if(LastBarTime == current_bar)
-      LastTradeBarTime = current_bar;
-   AllowTradeThisBar = false;
+   if(current_bar != 0 && current_bar != LastBarTime)
+   {
+      if(DrawSwingDots())
+         LastBarTime = current_bar;
+   }
+   return rates_total;
 }
 
 void OnDeinit(const int reason)
 {
-   DeleteLines();
    ObjectsDeleteAll(0, DOT_PREFIX);
    ObjectsDeleteAll(0, DIV_PREFIX);
    if(StochWindow >= 0 && StochName != "")
