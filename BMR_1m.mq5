@@ -1,15 +1,21 @@
 #property copyright "BMR_1m"
-#property version   "1.10"
-#property description "Displays two close-price SMAs; entry signals will be added later."
+#property version   "1.20"
+#property description "Displays two close-price SMAs and a Stochastic oscillator."
 
 input group "Indicators"
 input int InpFastSMAPeriod = 10;  // Fast SMA period
 input int InpSlowSMAPeriod = 20;  // Slow SMA period (width 2)
 input int InpDisplayBars   = 300; // Number of bars to draw
+input int InpStochKPeriod  = 5;   // Stochastic %K period
+input int InpStochDPeriod  = 3;   // Stochastic %D period
+input int InpStochSlowing  = 3;   // Stochastic slowing
 
 const string LINE_PREFIX = "BMR_1m_SMA_";
 int FastHandle = INVALID_HANDLE;
 int SlowHandle = INVALID_HANDLE;
+int StochHandle = INVALID_HANDLE;
+int StochWindow = -1;
+string StochName = "";
 datetime LastBarTime = 0;
 
 void DeleteLines()
@@ -72,19 +78,31 @@ void DrawSMAs()
 
 int OnInit()
 {
-   if(InpFastSMAPeriod < 1 || InpSlowSMAPeriod < 1 || InpDisplayBars < 2)
+   if(InpFastSMAPeriod < 1 || InpSlowSMAPeriod < 1 || InpDisplayBars < 2 ||
+      InpStochKPeriod < 1 || InpStochDPeriod < 1 || InpStochSlowing < 1)
    {
-      Print("SMA periods must be positive and display bars must be at least 2.");
+      Print("Indicator periods must be positive and display bars must be at least 2.");
       return INIT_PARAMETERS_INCORRECT;
    }
 
    FastHandle = iMA(_Symbol, PERIOD_CURRENT, InpFastSMAPeriod, 0, MODE_SMA, PRICE_CLOSE);
    SlowHandle = iMA(_Symbol, PERIOD_CURRENT, InpSlowSMAPeriod, 0, MODE_SMA, PRICE_CLOSE);
-   if(FastHandle == INVALID_HANDLE || SlowHandle == INVALID_HANDLE)
+   StochHandle = iStochastic(_Symbol, PERIOD_CURRENT, InpStochKPeriod,
+                             InpStochDPeriod, InpStochSlowing, MODE_SMA, STO_LOWHIGH);
+   if(FastHandle == INVALID_HANDLE || SlowHandle == INVALID_HANDLE ||
+      StochHandle == INVALID_HANDLE)
    {
-      PrintFormat("Could not create SMA handles (error %d).", GetLastError());
+      PrintFormat("Could not create indicator handles (error %d).", GetLastError());
       return INIT_FAILED;
    }
+   StochWindow = (int)ChartGetInteger(0, CHART_WINDOWS_TOTAL);
+   if(!ChartIndicatorAdd(0, StochWindow, StochHandle))
+   {
+      PrintFormat("Could not add Stochastic to chart (error %d).", GetLastError());
+      return INIT_FAILED;
+   }
+   StochName = ChartIndicatorName(0, StochWindow,
+                                  ChartIndicatorsTotal(0, StochWindow) - 1);
    DrawSMAs();
    return INIT_SUCCEEDED;
 }
@@ -97,9 +115,13 @@ void OnTick()
 void OnDeinit(const int reason)
 {
    DeleteLines();
+   if(StochWindow >= 0 && StochName != "")
+      ChartIndicatorDelete(0, StochWindow, StochName);
    if(FastHandle != INVALID_HANDLE)
       IndicatorRelease(FastHandle);
    if(SlowHandle != INVALID_HANDLE)
       IndicatorRelease(SlowHandle);
+   if(StochHandle != INVALID_HANDLE)
+      IndicatorRelease(StochHandle);
    ChartRedraw();
 }
