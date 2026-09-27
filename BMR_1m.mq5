@@ -1,22 +1,24 @@
 #property copyright "BMR_1m"
-#property version   "1.51"
-#property description "Displays SMAs, Stochastic, swings, and regular divergences."
+#property version   "1.70"
+#property description "Displays EMAs, Stochastic, swings, and early ATR-filtered divergences."
 
 input group "Indicators"
-input int InpFastSMAPeriod = 10;  // Fast SMA period
-input int InpSlowSMAPeriod = 20;  // Slow SMA period (width 2)
+input int InpFastEMAPeriod = 10;  // Fast EMA period
+input int InpSlowEMAPeriod = 20;  // Slow EMA period (width 2)
 input int InpDisplayBars   = 300; // Number of bars to draw
+input int InpATRPeriod     = 14;  // ATR period for divergence filter
 input int InpStochKPeriod  = 5;   // Stochastic %K period
 input int InpStochDPeriod  = 3;   // Stochastic %D period
 input int InpStochSlowing  = 3;   // Stochastic slowing
 input int InpSwingStrength = 2;   // Closed bars on each side of a swing
 
-const string LINE_PREFIX = "BMR_1m_SMA_";
+const string LINE_PREFIX = "BMR_1m_EMA_";
 const string DOT_PREFIX = "BMR_1m_Swing_";
 const string DIV_PREFIX = "BMR_1m_Divergence_";
 int FastHandle = INVALID_HANDLE;
 int SlowHandle = INVALID_HANDLE;
 int StochHandle = INVALID_HANDLE;
+int ATRHandle = INVALID_HANDLE;
 int StochWindow = -1;
 string StochName = "";
 datetime LastBarTime = 0;
@@ -72,12 +74,15 @@ void DrawSwingDots()
    datetime times[];
    double highs[];
    double lows[];
+   double closes[];
    ArraySetAsSeries(times, true);
    ArraySetAsSeries(highs, true);
    ArraySetAsSeries(lows, true);
+   ArraySetAsSeries(closes, true);
    if(CopyTime(_Symbol, PERIOD_CURRENT, 0, count, times) != count ||
       CopyHigh(_Symbol, PERIOD_CURRENT, 0, count, highs) != count ||
-      CopyLow(_Symbol, PERIOD_CURRENT, 0, count, lows) != count)
+      CopyLow(_Symbol, PERIOD_CURRENT, 0, count, lows) != count ||
+      CopyClose(_Symbol, PERIOD_CURRENT, 0, count, closes) != count)
       return;
 
    int price_highs[];
@@ -181,6 +186,17 @@ void DrawSwingDots()
       }
    }
 
+   double fast_ema[];
+   double slow_ema[];
+   double atr[];
+   ArraySetAsSeries(fast_ema, true);
+   ArraySetAsSeries(slow_ema, true);
+   ArraySetAsSeries(atr, true);
+   if(CopyBuffer(FastHandle, 0, 0, count, fast_ema) != count ||
+      CopyBuffer(SlowHandle, 0, 0, count, slow_ema) != count ||
+      CopyBuffer(ATRHandle, 0, 0, count, atr) != count)
+      return;
+
    const int match_distance = InpSwingStrength;
    for(int p = 0; p + 1 < price_low_count; ++p)
    {
@@ -192,7 +208,11 @@ void DrawSwingDots()
                                            older, match_distance);
       if(stoch_newer < 0 || stoch_older < 0 || stoch_newer >= stoch_older)
          continue;
-      if(lows[newer] < lows[older] && stoch[stoch_newer] > stoch[stoch_older])
+      if(lows[newer] < lows[older] && stoch[stoch_newer] > stoch[stoch_older] &&
+         atr[newer] > 0.0 && atr[newer] != EMPTY_VALUE &&
+         fast_ema[newer] != EMPTY_VALUE && slow_ema[newer] != EMPTY_VALUE &&
+         closes[newer] < fast_ema[newer] - atr[newer] &&
+         closes[newer] < slow_ema[newer] - atr[newer])
       {
          const string id = IntegerToString((long)times[newer]);
          DrawDivergenceLine(DIV_PREFIX + "BullPrice_" + id, 0,
@@ -213,7 +233,11 @@ void DrawSwingDots()
                                            older, match_distance);
       if(stoch_newer < 0 || stoch_older < 0 || stoch_newer >= stoch_older)
          continue;
-      if(highs[newer] > highs[older] && stoch[stoch_newer] < stoch[stoch_older])
+      if(highs[newer] > highs[older] && stoch[stoch_newer] < stoch[stoch_older] &&
+         atr[newer] > 0.0 && atr[newer] != EMPTY_VALUE &&
+         fast_ema[newer] != EMPTY_VALUE && slow_ema[newer] != EMPTY_VALUE &&
+         closes[newer] > fast_ema[newer] + atr[newer] &&
+         closes[newer] > slow_ema[newer] + atr[newer])
       {
          const string id = IntegerToString((long)times[newer]);
          DrawDivergenceLine(DIV_PREFIX + "BearPrice_" + id, 0,
@@ -222,6 +246,86 @@ void DrawSwingDots()
          DrawDivergenceLine(DIV_PREFIX + "BearStoch_" + id, StochWindow,
                             times[stoch_older], stoch[stoch_older],
                             times[stoch_newer], stoch[stoch_newer], clrRed);
+      }
+   }
+
+   // Check the newest closed candles before they have enough right-hand bars
+   // to become confirmed swings. These provisional lines are recalculated
+   // on each new bar and are replaced by confirmed lines when eligible.
+   for(int i = 1; i <= InpSwingStrength && i + InpSwingStrength < count; ++i)
+   {
+      if(stoch[i] == EMPTY_VALUE || atr[i] == EMPTY_VALUE || atr[i] <= 0.0 ||
+         fast_ema[i] == EMPTY_VALUE || slow_ema[i] == EMPTY_VALUE)
+         continue;
+
+      bool new_low = true;
+      bool new_high = true;
+      for(int j = 1; j <= InpSwingStrength; ++j)
+      {
+         if(lows[i] >= lows[i + j])
+            new_low = false;
+         if(highs[i] <= highs[i + j])
+            new_high = false;
+      }
+
+      if(new_low && closes[i] < fast_ema[i] - atr[i] &&
+         closes[i] < slow_ema[i] - atr[i])
+      {
+         int previous = -1;
+         for(int p = 0; p < price_low_count; ++p)
+         {
+            if(price_lows[p] > i + InpSwingStrength)
+            {
+               previous = price_lows[p];
+               break;
+            }
+         }
+         if(previous >= 0)
+         {
+            const int stoch_previous = NearestPivot(stoch_lows, stoch_low_count,
+                                                    previous, match_distance);
+            if(stoch_previous >= 0 && lows[i] < lows[previous] &&
+               stoch[i] > stoch[stoch_previous])
+            {
+               const string id = IntegerToString((long)times[i]);
+               DrawDivergenceLine(DIV_PREFIX + "EarlyBullPrice_" + id, 0,
+                                  times[previous], lows[previous], times[i], lows[i],
+                                  clrLime);
+               DrawDivergenceLine(DIV_PREFIX + "EarlyBullStoch_" + id, StochWindow,
+                                  times[stoch_previous], stoch[stoch_previous],
+                                  times[i], stoch[i], clrLime);
+            }
+         }
+      }
+
+      if(new_high && closes[i] > fast_ema[i] + atr[i] &&
+         closes[i] > slow_ema[i] + atr[i])
+      {
+         int previous = -1;
+         for(int p = 0; p < price_high_count; ++p)
+         {
+            if(price_highs[p] > i + InpSwingStrength)
+            {
+               previous = price_highs[p];
+               break;
+            }
+         }
+         if(previous >= 0)
+         {
+            const int stoch_previous = NearestPivot(stoch_highs, stoch_high_count,
+                                                    previous, match_distance);
+            if(stoch_previous >= 0 && highs[i] > highs[previous] &&
+               stoch[i] < stoch[stoch_previous])
+            {
+               const string id = IntegerToString((long)times[i]);
+               DrawDivergenceLine(DIV_PREFIX + "EarlyBearPrice_" + id, 0,
+                                  times[previous], highs[previous], times[i], highs[i],
+                                  clrRed);
+               DrawDivergenceLine(DIV_PREFIX + "EarlyBearStoch_" + id, StochWindow,
+                                  times[stoch_previous], stoch[stoch_previous],
+                                  times[i], stoch[i], clrRed);
+            }
+         }
       }
    }
 }
@@ -243,10 +347,10 @@ void DrawSegment(const string name, const datetime start_time, const double star
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
 }
 
-void DrawSMAs()
+void DrawEMAs()
 {
    const int count = MathMin(InpDisplayBars + 1, Bars(_Symbol, PERIOD_CURRENT));
-   if(count < MathMax(InpFastSMAPeriod, InpSlowSMAPeriod) + 1)
+   if(count < MathMax(InpFastEMAPeriod, InpSlowEMAPeriod) + 1)
       return;
 
    datetime times[];
@@ -282,7 +386,8 @@ void DrawSMAs()
 
 int OnInit()
 {
-   if(InpFastSMAPeriod < 1 || InpSlowSMAPeriod < 1 || InpDisplayBars < 2 ||
+   if(InpFastEMAPeriod < 1 || InpSlowEMAPeriod < 1 || InpDisplayBars < 2 ||
+      InpATRPeriod < 1 ||
       InpStochKPeriod < 1 || InpStochDPeriod < 1 || InpStochSlowing < 1 ||
       InpSwingStrength < 1)
    {
@@ -290,12 +395,13 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
    }
 
-   FastHandle = iMA(_Symbol, PERIOD_CURRENT, InpFastSMAPeriod, 0, MODE_SMA, PRICE_CLOSE);
-   SlowHandle = iMA(_Symbol, PERIOD_CURRENT, InpSlowSMAPeriod, 0, MODE_SMA, PRICE_CLOSE);
+   FastHandle = iMA(_Symbol, PERIOD_CURRENT, InpFastEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+   SlowHandle = iMA(_Symbol, PERIOD_CURRENT, InpSlowEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+   ATRHandle = iATR(_Symbol, PERIOD_CURRENT, InpATRPeriod);
    StochHandle = iStochastic(_Symbol, PERIOD_CURRENT, InpStochKPeriod,
                              InpStochDPeriod, InpStochSlowing, MODE_SMA, STO_LOWHIGH);
    if(FastHandle == INVALID_HANDLE || SlowHandle == INVALID_HANDLE ||
-      StochHandle == INVALID_HANDLE)
+      StochHandle == INVALID_HANDLE || ATRHandle == INVALID_HANDLE)
    {
       PrintFormat("Could not create indicator handles (error %d).", GetLastError());
       return INIT_FAILED;
@@ -308,13 +414,13 @@ int OnInit()
    }
    StochName = ChartIndicatorName(0, StochWindow,
                                   ChartIndicatorsTotal(0, StochWindow) - 1);
-   DrawSMAs();
+   DrawEMAs();
    return INIT_SUCCEEDED;
 }
 
 void OnTick()
 {
-   DrawSMAs();
+   DrawEMAs();
 }
 
 void OnDeinit(const int reason)
@@ -330,5 +436,7 @@ void OnDeinit(const int reason)
       IndicatorRelease(SlowHandle);
    if(StochHandle != INVALID_HANDLE)
       IndicatorRelease(StochHandle);
+   if(ATRHandle != INVALID_HANDLE)
+      IndicatorRelease(ATRHandle);
    ChartRedraw();
 }
