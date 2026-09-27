@@ -1,6 +1,6 @@
 #property copyright "BMR_1m"
-#property version   "1.40"
-#property description "Displays SMAs, Stochastic, and confirmed swing highs and lows."
+#property version   "1.51"
+#property description "Displays SMAs, Stochastic, swings, and regular divergences."
 
 input group "Indicators"
 input int InpFastSMAPeriod = 10;  // Fast SMA period
@@ -13,6 +13,7 @@ input int InpSwingStrength = 2;   // Closed bars on each side of a swing
 
 const string LINE_PREFIX = "BMR_1m_SMA_";
 const string DOT_PREFIX = "BMR_1m_Swing_";
+const string DIV_PREFIX = "BMR_1m_Divergence_";
 int FastHandle = INVALID_HANDLE;
 int SlowHandle = INVALID_HANDLE;
 int StochHandle = INVALID_HANDLE;
@@ -25,9 +26,44 @@ void DeleteLines()
    ObjectsDeleteAll(0, LINE_PREFIX);
 }
 
+int NearestPivot(const int &pivots[], const int pivot_count,
+                 const int target, const int max_distance)
+{
+   int nearest = -1;
+   int best_distance = max_distance + 1;
+   for(int i = 0; i < pivot_count; ++i)
+   {
+      const int distance = MathAbs(pivots[i] - target);
+      if(distance < best_distance)
+      {
+         nearest = pivots[i];
+         best_distance = distance;
+      }
+   }
+   return nearest;
+}
+
+void DrawDivergenceLine(const string name, const int window,
+                        const datetime older_time, const double older_value,
+                        const datetime newer_time, const double newer_value,
+                        const color line_color)
+{
+   if(!ObjectCreate(0, name, OBJ_TREND, window, older_time, older_value,
+                    newer_time, newer_value))
+      return;
+   ObjectSetInteger(0, name, OBJPROP_COLOR, line_color);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+   ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DASH);
+   ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
+   ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+}
+
 void DrawSwingDots()
 {
    ObjectsDeleteAll(0, DOT_PREFIX);
+   ObjectsDeleteAll(0, DIV_PREFIX);
    const int count = MathMin(InpDisplayBars + 2 * InpSwingStrength + 1,
                              Bars(_Symbol, PERIOD_CURRENT));
    if(count < 2 * InpSwingStrength + 2)
@@ -44,6 +80,12 @@ void DrawSwingDots()
       CopyLow(_Symbol, PERIOD_CURRENT, 0, count, lows) != count)
       return;
 
+   int price_highs[];
+   int price_lows[];
+   int price_high_count = 0;
+   int price_low_count = 0;
+   ArrayResize(price_highs, count);
+   ArrayResize(price_lows, count);
    for(int i = InpSwingStrength + 1;
        i < count - InpSwingStrength && i <= InpDisplayBars; ++i)
    {
@@ -58,6 +100,7 @@ void DrawSwingDots()
       }
       if(swing_high)
       {
+         price_highs[price_high_count++] = i;
          const string name = DOT_PREFIX + "High_" + IntegerToString((long)times[i]);
          if(ObjectCreate(0, name, OBJ_TEXT, 0, times[i], highs[i]))
          {
@@ -72,6 +115,7 @@ void DrawSwingDots()
       }
       if(swing_low)
       {
+         price_lows[price_low_count++] = i;
          const string name = DOT_PREFIX + "Low_" + IntegerToString((long)times[i]);
          if(ObjectCreate(0, name, OBJ_TEXT, 0, times[i], lows[i]))
          {
@@ -90,6 +134,12 @@ void DrawSwingDots()
    ArraySetAsSeries(stoch, true);
    if(StochWindow < 0 || CopyBuffer(StochHandle, 0, 0, count, stoch) != count)
       return;
+   int stoch_highs[];
+   int stoch_lows[];
+   int stoch_high_count = 0;
+   int stoch_low_count = 0;
+   ArrayResize(stoch_highs, count);
+   ArrayResize(stoch_lows, count);
    for(int i = InpSwingStrength + 1;
        i < count - InpSwingStrength && i <= InpDisplayBars; ++i)
    {
@@ -112,6 +162,10 @@ void DrawSwingDots()
       }
       if(!swing_high && !swing_low)
          continue;
+      if(swing_high)
+         stoch_highs[stoch_high_count++] = i;
+      if(swing_low)
+         stoch_lows[stoch_low_count++] = i;
       const string name = DOT_PREFIX + "Stoch_" +
                           (swing_high ? "High_" : "Low_") +
                           IntegerToString((long)times[i]);
@@ -124,6 +178,50 @@ void DrawSwingDots()
          ObjectSetInteger(0, name, OBJPROP_COLOR, swing_high ? clrRed : clrLime);
          ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
          ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+      }
+   }
+
+   const int match_distance = InpSwingStrength;
+   for(int p = 0; p + 1 < price_low_count; ++p)
+   {
+      const int newer = price_lows[p];
+      const int older = price_lows[p + 1];
+      const int stoch_newer = NearestPivot(stoch_lows, stoch_low_count,
+                                           newer, match_distance);
+      const int stoch_older = NearestPivot(stoch_lows, stoch_low_count,
+                                           older, match_distance);
+      if(stoch_newer < 0 || stoch_older < 0 || stoch_newer >= stoch_older)
+         continue;
+      if(lows[newer] < lows[older] && stoch[stoch_newer] > stoch[stoch_older])
+      {
+         const string id = IntegerToString((long)times[newer]);
+         DrawDivergenceLine(DIV_PREFIX + "BullPrice_" + id, 0,
+                            times[older], lows[older], times[newer], lows[newer],
+                            clrLime);
+         DrawDivergenceLine(DIV_PREFIX + "BullStoch_" + id, StochWindow,
+                            times[stoch_older], stoch[stoch_older],
+                            times[stoch_newer], stoch[stoch_newer], clrLime);
+      }
+   }
+   for(int p = 0; p + 1 < price_high_count; ++p)
+   {
+      const int newer = price_highs[p];
+      const int older = price_highs[p + 1];
+      const int stoch_newer = NearestPivot(stoch_highs, stoch_high_count,
+                                           newer, match_distance);
+      const int stoch_older = NearestPivot(stoch_highs, stoch_high_count,
+                                           older, match_distance);
+      if(stoch_newer < 0 || stoch_older < 0 || stoch_newer >= stoch_older)
+         continue;
+      if(highs[newer] > highs[older] && stoch[stoch_newer] < stoch[stoch_older])
+      {
+         const string id = IntegerToString((long)times[newer]);
+         DrawDivergenceLine(DIV_PREFIX + "BearPrice_" + id, 0,
+                            times[older], highs[older], times[newer], highs[newer],
+                            clrRed);
+         DrawDivergenceLine(DIV_PREFIX + "BearStoch_" + id, StochWindow,
+                            times[stoch_older], stoch[stoch_older],
+                            times[stoch_newer], stoch[stoch_newer], clrRed);
       }
    }
 }
@@ -223,6 +321,7 @@ void OnDeinit(const int reason)
 {
    DeleteLines();
    ObjectsDeleteAll(0, DOT_PREFIX);
+   ObjectsDeleteAll(0, DIV_PREFIX);
    if(StochWindow >= 0 && StochName != "")
       ChartIndicatorDelete(0, StochWindow, StochName);
    if(FastHandle != INVALID_HANDLE)
