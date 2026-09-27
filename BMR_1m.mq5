@@ -1,6 +1,6 @@
 #property copyright "BMR_1m"
-#property version   "1.80"
-#property description "Displays EMAs, Stochastic, swings, and early ATR-filtered divergences."
+#property version   "1.90"
+#property description "Trades confirmed ATR-filtered divergences with an EMA expansion filter."
 
 #include <Trade/Trade.mqh>
 
@@ -149,6 +149,21 @@ void OpenDivergenceTrade(const bool buy, const double swing_stop)
       PrintFormat("%s divergence trade opened: %.8f lots, SL %.*f, TP %.*f, estimated risk %.2f USD.",
                   buy ? "Bullish" : "Bearish", volume, _Digits, stop,
                   _Digits, take_profit, -expected_loss);
+}
+
+bool EMAsExpanding(const bool buy, const double &fast_ema[],
+                   const double &slow_ema[])
+{
+   if(fast_ema[1] == EMPTY_VALUE || fast_ema[2] == EMPTY_VALUE ||
+      slow_ema[1] == EMPTY_VALUE || slow_ema[2] == EMPTY_VALUE)
+      return false;
+   if(buy)
+      return fast_ema[1] < slow_ema[1] &&
+             fast_ema[1] < fast_ema[2] && slow_ema[1] < slow_ema[2] &&
+             slow_ema[1] - fast_ema[1] > slow_ema[2] - fast_ema[2];
+   return fast_ema[1] > slow_ema[1] &&
+          fast_ema[1] > fast_ema[2] && slow_ema[1] > slow_ema[2] &&
+          fast_ema[1] - slow_ema[1] > fast_ema[2] - slow_ema[2];
 }
 
 void DrawSwingDots()
@@ -310,6 +325,9 @@ void DrawSwingDots()
          DrawDivergenceLine(DIV_PREFIX + "BullStoch_" + id, StochWindow,
                             times[stoch_older], stoch[stoch_older],
                             times[stoch_newer], stoch[stoch_newer], clrLime);
+         if(MathMin(newer, stoch_newer) == InpSwingStrength + 1 &&
+            EMAsExpanding(true, fast_ema, slow_ema))
+            OpenDivergenceTrade(true, lows[newer]);
       }
    }
    for(int p = 0; p + 1 < price_high_count; ++p)
@@ -335,90 +353,9 @@ void DrawSwingDots()
          DrawDivergenceLine(DIV_PREFIX + "BearStoch_" + id, StochWindow,
                             times[stoch_older], stoch[stoch_older],
                             times[stoch_newer], stoch[stoch_newer], clrRed);
-      }
-   }
-
-   // Check the newest closed candles before they have enough right-hand bars
-   // to become confirmed swings. These provisional lines are recalculated
-   // on each new bar and are replaced by confirmed lines when eligible.
-   for(int i = 1; i <= InpSwingStrength && i + InpSwingStrength < count; ++i)
-   {
-      if(stoch[i] == EMPTY_VALUE || atr[i] == EMPTY_VALUE || atr[i] <= 0.0 ||
-         fast_ema[i] == EMPTY_VALUE || slow_ema[i] == EMPTY_VALUE)
-         continue;
-
-      bool new_low = true;
-      bool new_high = true;
-      for(int j = 1; j <= InpSwingStrength; ++j)
-      {
-         if(lows[i] >= lows[i + j])
-            new_low = false;
-         if(highs[i] <= highs[i + j])
-            new_high = false;
-      }
-
-      if(new_low && closes[i] < fast_ema[i] - atr[i] &&
-         closes[i] < slow_ema[i] - atr[i])
-      {
-         int previous = -1;
-         for(int p = 0; p < price_low_count; ++p)
-         {
-            if(price_lows[p] > i + InpSwingStrength)
-            {
-               previous = price_lows[p];
-               break;
-            }
-         }
-         if(previous >= 0)
-         {
-            const int stoch_previous = NearestPivot(stoch_lows, stoch_low_count,
-                                                    previous, match_distance);
-            if(stoch_previous >= 0 && lows[i] < lows[previous] &&
-               stoch[i] > stoch[stoch_previous])
-            {
-               const string id = IntegerToString((long)times[i]);
-               DrawDivergenceLine(DIV_PREFIX + "EarlyBullPrice_" + id, 0,
-                                  times[previous], lows[previous], times[i], lows[i],
-                                  clrLime);
-               DrawDivergenceLine(DIV_PREFIX + "EarlyBullStoch_" + id, StochWindow,
-                                  times[stoch_previous], stoch[stoch_previous],
-                                  times[i], stoch[i], clrLime);
-               if(i == 1)
-                  OpenDivergenceTrade(true, lows[i]);
-            }
-         }
-      }
-
-      if(new_high && closes[i] > fast_ema[i] + atr[i] &&
-         closes[i] > slow_ema[i] + atr[i])
-      {
-         int previous = -1;
-         for(int p = 0; p < price_high_count; ++p)
-         {
-            if(price_highs[p] > i + InpSwingStrength)
-            {
-               previous = price_highs[p];
-               break;
-            }
-         }
-         if(previous >= 0)
-         {
-            const int stoch_previous = NearestPivot(stoch_highs, stoch_high_count,
-                                                    previous, match_distance);
-            if(stoch_previous >= 0 && highs[i] > highs[previous] &&
-               stoch[i] < stoch[stoch_previous])
-            {
-               const string id = IntegerToString((long)times[i]);
-               DrawDivergenceLine(DIV_PREFIX + "EarlyBearPrice_" + id, 0,
-                                  times[previous], highs[previous], times[i], highs[i],
-                                  clrRed);
-               DrawDivergenceLine(DIV_PREFIX + "EarlyBearStoch_" + id, StochWindow,
-                                  times[stoch_previous], stoch[stoch_previous],
-                                  times[i], stoch[i], clrRed);
-               if(i == 1)
-                  OpenDivergenceTrade(false, highs[i]);
-            }
-         }
+         if(MathMin(newer, stoch_newer) == InpSwingStrength + 1 &&
+            EMAsExpanding(false, fast_ema, slow_ema))
+            OpenDivergenceTrade(false, highs[newer]);
       }
    }
 }
