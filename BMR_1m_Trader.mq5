@@ -1,4 +1,4 @@
-#property version "1.20"
+#property version "1.21"
 #property description "Trades slow-EMA pullbacks with money risk and a fast-EMA candle-close exit."
 #include <Trade/Trade.mqh>
 
@@ -21,6 +21,11 @@ input bool InpUseH1TrendFilter = false; // Require closed H1 EMA alignment and s
 input bool InpUseStochRecovery = false; // Cross out of oversold/overbought at entry
 input bool InpUsePersistenceFilter = false; // Frozen research filter: 32 aligned closed bars
 input bool InpDemoOnly = false; // Refuse non-demo accounts outside the tester
+input bool InpResearchBreakout = false; // Research: closed-bar Donchian breakout
+input int InpBreakoutBars = 20;
+input double InpBreakoutStopATR = 2.0;
+input bool InpBreakoutTrendFilter = false; // Require EMA alignment and five-bar slow-EMA slope
+input bool InpWriteForwardAudit = false; // Write own trade fills/costs to a separate CSV
 
 CTrade Trade;
 int FastHandle = INVALID_HANDLE;
@@ -28,6 +33,7 @@ int SlowHandle = INVALID_HANDLE;
 int StochHandle = INVALID_HANDLE;
 int H1FastHandle = INVALID_HANDLE;
 int H1SlowHandle = INVALID_HANDLE;
+int ATRHandle = INVALID_HANDLE;
 datetime LastBar = 0;
 
 int OnInit()
@@ -41,6 +47,10 @@ int OnInit()
       InpStochKPeriod < 1 || InpStochDPeriod < 1 || InpStochSlowing < 1 ||
       InpOversold <= 0 || InpOverbought >= 100 || InpOversold >= InpOverbought)
       return INIT_PARAMETERS_INCORRECT;
+   if(InpResearchBreakout && (InpBreakoutBars < 2 || InpBreakoutBars >= InpLookbackBars || InpBreakoutStopATR <= 0))
+      return INIT_PARAMETERS_INCORRECT;
+   ATRHandle = iATR(_Symbol, PERIOD_CURRENT, 14);
+   if(ATRHandle == INVALID_HANDLE) return INIT_FAILED;
    FastHandle = iMA(_Symbol, PERIOD_CURRENT, InpFastEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
    SlowHandle = iMA(_Symbol, PERIOD_CURRENT, InpSlowEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
    StochHandle = iStochastic(_Symbol, PERIOD_CURRENT, InpStochKPeriod,
@@ -58,6 +68,10 @@ int OnInit()
    Trade.SetExpertMagicNumber(InpMagicNumber);
    Trade.SetTypeFillingBySymbol(_Symbol);
    LastBar = iTime(_Symbol, PERIOD_CURRENT, 0);
+   PrintFormat("BMR initialized: breakout=%s, trend_filter=%s, demo_only=%s, magic=%I64u, algo_allowed=%s",
+      InpResearchBreakout ? "true" : "false", InpBreakoutTrendFilter ? "true" : "false",
+      InpDemoOnly ? "true" : "false", InpMagicNumber,
+      MQLInfoInteger(MQL_TRADE_ALLOWED) && TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) ? "true" : "false");
    return INIT_SUCCEEDED;
 }
 
@@ -107,6 +121,8 @@ double NearestSwing(const bool buy, const MqlRates &bars[], const int count)
 
 void EnterTrade(bool buy, const double swing)
 {
+   if(InpDemoOnly && !MQLInfoInteger(MQL_TESTER) &&
+      AccountInfoInteger(ACCOUNT_TRADE_MODE) != ACCOUNT_TRADE_MODE_DEMO) return;
    if(PositionSelect(_Symbol) || swing <= 0)
       return;
    if(AccountInfoString(ACCOUNT_CURRENCY) != "USD")
@@ -184,6 +200,29 @@ void EnterTrade(bool buy, const double swing)
       PrintFormat("Pullback entry: %.8f lots, estimated SL risk %.2f USD.", lots, -loss);
 }
 
+void OnTradeTransaction(const MqlTradeTransaction &trans,
+                        const MqlTradeRequest &request, const MqlTradeResult &result)
+{
+   if(!InpWriteForwardAudit || trans.type != TRADE_TRANSACTION_DEAL_ADD ||
+      !HistoryDealSelect(trans.deal) || HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol ||
+      (ulong)HistoryDealGetInteger(trans.deal, DEAL_MAGIC) != InpMagicNumber) return;
+   const string name = StringFormat("BMR_forward_%I64u.csv", InpMagicNumber);
+   const int file = FileOpen(name, FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ, ',');
+   if(file == INVALID_HANDLE) { PrintFormat("Forward audit file error: %d", GetLastError()); return; }
+   if(FileSize(file) == 0)
+      FileWrite(file, "time", "deal", "position", "entry", "type", "volume", "fill_price",
+                "profit", "commission", "swap", "fee", "observed_bid", "observed_ask");
+   FileSeek(file, 0, SEEK_END);
+   MqlTick quote; SymbolInfoTick(_Symbol, quote);
+   FileWrite(file, TimeToString((datetime)HistoryDealGetInteger(trans.deal, DEAL_TIME), TIME_DATE|TIME_SECONDS),
+      trans.deal, HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID),
+      HistoryDealGetInteger(trans.deal, DEAL_ENTRY), HistoryDealGetInteger(trans.deal, DEAL_TYPE),
+      HistoryDealGetDouble(trans.deal, DEAL_VOLUME), HistoryDealGetDouble(trans.deal, DEAL_PRICE),
+      HistoryDealGetDouble(trans.deal, DEAL_PROFIT), HistoryDealGetDouble(trans.deal, DEAL_COMMISSION),
+      HistoryDealGetDouble(trans.deal, DEAL_SWAP), HistoryDealGetDouble(trans.deal, DEAL_FEE), quote.bid, quote.ask);
+   FileFlush(file); FileClose(file);
+}
+
 void OnTick()
 {
    const datetime current = iTime(_Symbol, PERIOD_CURRENT, 0);
@@ -203,6 +242,26 @@ void OnTick()
    if(ManagePosition(bars[1].close, fast[1]) || PositionSelect(_Symbol))
    {
       LastBar = current;
+      return;
+   }
+   if(InpResearchBreakout)
+   {
+      if(count < InpBreakoutBars + 2) return;
+      double atr[1];
+      if(CopyBuffer(ATRHandle, 0, 1, 1, atr) != 1 || atr[0] <= 0 || atr[0] == EMPTY_VALUE) return;
+      LastBar = current;
+      double upper = bars[2].high, lower = bars[2].low;
+      for(int i = 3; i <= InpBreakoutBars + 1; ++i)
+      {
+         upper = MathMax(upper, bars[i].high);
+         lower = MathMin(lower, bars[i].low);
+      }
+      const bool trend_buy = !InpBreakoutTrendFilter || (fast[1] > slow[1] && slow[1] > slow[6]);
+      const bool trend_sell = !InpBreakoutTrendFilter || (fast[1] < slow[1] && slow[1] < slow[6]);
+      if(bars[1].close > upper && trend_buy)
+         EnterTrade(true, bars[1].close - InpBreakoutStopATR * atr[0]);
+      else if(bars[1].close < lower && trend_sell)
+         EnterTrade(false, bars[1].close + InpBreakoutStopATR * atr[0]);
       return;
    }
    double stoch[];
@@ -273,6 +332,7 @@ void OnTick()
 
 void OnDeinit(const int reason)
 {
+   if(ATRHandle != INVALID_HANDLE) IndicatorRelease(ATRHandle);
    if(FastHandle != INVALID_HANDLE) IndicatorRelease(FastHandle);
    if(SlowHandle != INVALID_HANDLE) IndicatorRelease(SlowHandle);
    if(StochHandle != INVALID_HANDLE) IndicatorRelease(StochHandle);
