@@ -1,5 +1,5 @@
 #property copyright "BMR_1m"
-#property version   "2.00"
+#property version   "2.10"
 #property description "Displays EMAs, Stochastic, swings, and ATR-filtered divergences."
 #property indicator_chart_window
 #property indicator_buffers 2
@@ -55,14 +55,15 @@ int NearestPivot(const int &pivots[], const int pivot_count,
 void DrawDivergenceLine(const string name, const int window,
                         const datetime older_time, const double older_value,
                         const datetime newer_time, const double newer_value,
-                        const color line_color)
+                        const color line_color,
+                        const ENUM_LINE_STYLE line_style = STYLE_DASH)
 {
    if(!ObjectCreate(0, name, OBJ_TREND, window, older_time, older_value,
                     newer_time, newer_value))
       return;
    ObjectSetInteger(0, name, OBJPROP_COLOR, line_color);
    ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
-   ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DASH);
+   ObjectSetInteger(0, name, OBJPROP_STYLE, line_style);
    ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
    ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
@@ -229,6 +230,16 @@ bool DrawSwingDots()
                             times[stoch_older], stoch[stoch_older],
                             times[stoch_newer], stoch[stoch_newer], clrLime);
       }
+      if(lows[newer] > lows[older] && stoch[stoch_newer] < stoch[stoch_older])
+      {
+         const string id = IntegerToString((long)times[newer]);
+         DrawDivergenceLine(DIV_PREFIX + "ContinuationBullPrice_" + id, 0,
+                            times[older], lows[older], times[newer], lows[newer],
+                            clrLime, STYLE_DOT);
+         DrawDivergenceLine(DIV_PREFIX + "ContinuationBullStoch_" + id, StochWindow,
+                            times[stoch_older], stoch[stoch_older],
+                            times[stoch_newer], stoch[stoch_newer], clrLime, STYLE_DOT);
+      }
    }
    for(int p = 0; p + 1 < price_high_count; ++p)
    {
@@ -253,6 +264,16 @@ bool DrawSwingDots()
          DrawDivergenceLine(DIV_PREFIX + "BearStoch_" + id, StochWindow,
                             times[stoch_older], stoch[stoch_older],
                             times[stoch_newer], stoch[stoch_newer], clrRed);
+      }
+      if(highs[newer] < highs[older] && stoch[stoch_newer] > stoch[stoch_older])
+      {
+         const string id = IntegerToString((long)times[newer]);
+         DrawDivergenceLine(DIV_PREFIX + "ContinuationBearPrice_" + id, 0,
+                            times[older], highs[older], times[newer], highs[newer],
+                            clrRed, STYLE_DOT);
+         DrawDivergenceLine(DIV_PREFIX + "ContinuationBearStoch_" + id, StochWindow,
+                            times[stoch_older], stoch[stoch_older],
+                            times[stoch_newer], stoch[stoch_newer], clrRed, STYLE_DOT);
       }
    }
 
