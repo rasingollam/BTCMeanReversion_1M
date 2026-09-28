@@ -1,5 +1,5 @@
 #property copyright "BMR_1m"
-#property version   "2.30"
+#property version   "2.40"
 #property description "Displays EMAs, Stochastic, swings, and ATR-filtered divergences."
 #property indicator_chart_window
 #property indicator_buffers 2
@@ -35,6 +35,7 @@ int ATRHandle = INVALID_HANDLE;
 int StochWindow = -1;
 string StochName = "";
 datetime LastBarTime = 0;
+datetime LastPullbackBarTime = 0;
 
 int NearestPivot(const int &pivots[], const int pivot_count,
                  const int target, const int max_distance)
@@ -75,7 +76,6 @@ bool DrawSwingDots()
 {
    ObjectsDeleteAll(0, DOT_PREFIX);
    ObjectsDeleteAll(0, DIV_PREFIX);
-   ObjectsDeleteAll(0, PULLBACK_PREFIX);
    const int count = MathMin(InpDisplayBars + 2 * InpSwingStrength + 1,
                              Bars(_Symbol, PERIOD_CURRENT));
    if(count < 2 * InpSwingStrength + 2)
@@ -206,34 +206,6 @@ bool DrawSwingDots()
       CopyBuffer(SlowHandle, 0, 0, count, slow_ema) != count ||
       CopyBuffer(ATRHandle, 0, 0, count, atr) != count)
       return false;
-
-   for(int i = 1; i + 1 < count && i <= InpDisplayBars; ++i)
-   {
-      if(fast_ema[i] == EMPTY_VALUE || slow_ema[i] == EMPTY_VALUE ||
-         slow_ema[i + 1] == EMPTY_VALUE)
-         continue;
-      const bool touches_slow = lows[i] <= slow_ema[i] && highs[i] >= slow_ema[i];
-      const bool buy_pullback = touches_slow && fast_ema[i] > slow_ema[i] &&
-                                closes[i + 1] > slow_ema[i + 1] &&
-                                closes[i] > slow_ema[i];
-      const bool sell_pullback = touches_slow && fast_ema[i] < slow_ema[i] &&
-                                 closes[i + 1] < slow_ema[i + 1] &&
-                                 closes[i] < slow_ema[i];
-      if(!buy_pullback && !sell_pullback)
-         continue;
-      const string name = PULLBACK_PREFIX + (buy_pullback ? "Buy_" : "Sell_") +
-                          IntegerToString((long)times[i]);
-      const int half_bar = MathMax(1, PeriodSeconds(PERIOD_CURRENT) / 2);
-      if(ObjectCreate(0, name, OBJ_RECTANGLE, 0, times[i] - half_bar, highs[i],
-                      times[i] + half_bar, lows[i]))
-      {
-         ObjectSetInteger(0, name, OBJPROP_COLOR, buy_pullback ? clrDarkGreen : clrDarkRed);
-         ObjectSetInteger(0, name, OBJPROP_FILL, true);
-         ObjectSetInteger(0, name, OBJPROP_BACK, true);
-         ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-         ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-      }
-   }
 
    const int match_distance = InpSwingStrength;
    for(int p = 0; p + 1 < price_low_count; ++p)
@@ -397,6 +369,81 @@ bool DrawSwingDots()
    return true;
 }
 
+void DrawPullbacks(const bool reset)
+{
+   const int count = MathMin(InpDisplayBars + 1, Bars(_Symbol, PERIOD_CURRENT));
+   MqlRates bars[];
+   double fast[];
+   double slow[];
+   ArraySetAsSeries(bars, true);
+   ArraySetAsSeries(fast, true);
+   ArraySetAsSeries(slow, true);
+   if(count < 2 || CopyRates(_Symbol, PERIOD_CURRENT, 0, count, bars) != count ||
+      CopyBuffer(FastHandle, 0, 0, count, fast) != count ||
+      CopyBuffer(SlowHandle, 0, 0, count, slow) != count)
+      return;
+   if(reset || bars[0].time != LastPullbackBarTime)
+   {
+      ObjectsDeleteAll(0, PULLBACK_PREFIX);
+      LastPullbackBarTime = bars[0].time;
+   }
+   int pending_buy = -1;
+   int pending_sell = -1;
+   for(int i = count - 1; i >= 0; --i)
+   {
+      if(fast[i] == EMPTY_VALUE || slow[i] == EMPTY_VALUE)
+         continue;
+      const bool bullish = fast[i] > slow[i];
+      const bool bearish = fast[i] < slow[i];
+      if(!bullish)
+         pending_buy = -1;
+      if(!bearish)
+         pending_sell = -1;
+
+      int confirmed = -1;
+      int setup = -1;
+      bool buy = false;
+      if(i > 0 && pending_buy >= 0 && bars[i].close > bars[pending_buy].open)
+      {
+         confirmed = i;
+         setup = pending_buy;
+         buy = true;
+         pending_buy = -1;
+      }
+      else if(i > 0 && pending_sell >= 0 && bars[i].close < bars[pending_sell].open)
+      {
+         confirmed = i;
+         setup = pending_sell;
+         pending_sell = -1;
+      }
+      if(confirmed >= 0)
+      {
+         const string name = PULLBACK_PREFIX + (buy ? "Buy_" : "Sell_") +
+                             IntegerToString((long)bars[confirmed].time);
+         const int half_bar = MathMax(1, PeriodSeconds(PERIOD_CURRENT) / 2);
+         if(ObjectFind(0, name) < 0 &&
+            ObjectCreate(0, name, OBJ_RECTANGLE, 0,
+                         bars[setup].time - half_bar, bars[setup].open,
+                         bars[confirmed].time + half_bar, bars[confirmed].close))
+         {
+            ObjectSetInteger(0, name, OBJPROP_COLOR, buy ? clrDarkGreen : clrDarkRed);
+            ObjectSetInteger(0, name, OBJPROP_FILL, true);
+            ObjectSetInteger(0, name, OBJPROP_BACK, true);
+            ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+         }
+      }
+      // A setup candle must close before a subsequent candle can break its open.
+      if(i > 0 && bars[i].low <= slow[i] && bars[i].high >= slow[i])
+      {
+         if(bullish && bars[i].close < bars[i].open)
+            pending_buy = i;
+         else if(bearish && bars[i].close > bars[i].open)
+            pending_sell = i;
+      }
+   }
+}
+
 int OnInit()
 {
    if(InpFastEMAPeriod < 1 || InpSlowEMAPeriod < 1 || InpDisplayBars < 2 ||
@@ -448,6 +495,7 @@ int OnCalculate(const int rates_total, const int prev_calculated,
       return prev_calculated;
 
    const datetime current_bar = iTime(_Symbol, PERIOD_CURRENT, 0);
+   DrawPullbacks(prev_calculated == 0);
    if(current_bar != 0 && current_bar != LastBarTime)
    {
       if(DrawSwingDots())
