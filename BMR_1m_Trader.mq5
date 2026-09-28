@@ -19,6 +19,8 @@ input double InpOversold = 40.0;   // Buy only below this %K value
 input double InpOverbought = 60.0; // Sell only above this %K value
 input bool InpUseH1TrendFilter = false; // Require closed H1 EMA alignment and slopes
 input bool InpUseStochRecovery = false; // Cross out of oversold/overbought at entry
+input bool InpUsePersistenceFilter = false; // Frozen research filter: 32 aligned closed bars
+input bool InpDemoOnly = false; // Refuse non-demo accounts outside the tester
 
 CTrade Trade;
 int FastHandle = INVALID_HANDLE;
@@ -30,6 +32,9 @@ datetime LastBar = 0;
 
 int OnInit()
 {
+   if(InpDemoOnly && !MQLInfoInteger(MQL_TESTER) &&
+      AccountInfoInteger(ACCOUNT_TRADE_MODE) != ACCOUNT_TRADE_MODE_DEMO)
+      return INIT_FAILED;
    if(InpFastEMAPeriod < 1 || InpSlowEMAPeriod < 1 || InpSwingStrength < 1 ||
       InpLookbackBars < 2 * InpSwingStrength + 3 ||
       InpRiskMoney <= 0 || InpRiskReward <= 0 ||
@@ -227,6 +232,15 @@ void OnTick()
    const bool stoch_sell = InpUseStochRecovery
       ? stoch[1] > InpOverbought && stoch[0] <= InpOverbought
       : stoch[0] > InpOverbought;
+   if(InpUsePersistenceFilter)
+   {
+      if(count < 33) return;
+      for(int i = 1; i <= 32; ++i)
+      {
+         allow_buy = allow_buy && fast[i] > slow[i];
+         allow_sell = allow_sell && fast[i] < slow[i];
+      }
+   }
    LastBar = current;
    int pending_buy = -1, pending_sell = -1;
    for(int i = count - 1; i >= 1; --i)
