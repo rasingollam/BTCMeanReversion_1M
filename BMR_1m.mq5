@@ -1,5 +1,5 @@
 #property copyright "BMR_1m"
-#property version   "2.20"
+#property version   "2.30"
 #property description "Displays EMAs, Stochastic, swings, and ATR-filtered divergences."
 #property indicator_chart_window
 #property indicator_buffers 2
@@ -15,7 +15,7 @@
 
 input group "Indicators"
 input int InpFastEMAPeriod = 10;  // Fast EMA period
-input int InpSlowEMAPeriod = 20;  // Slow EMA period (width 2)
+input int InpSlowEMAPeriod = 50;  // Slow EMA period (width 2)
 input int InpDisplayBars   = 300; // Number of bars to draw
 input int InpATRPeriod     = 14;  // ATR period for divergence filter
 input int InpStochKPeriod  = 5;   // Stochastic %K period
@@ -227,7 +227,7 @@ bool DrawSwingDots()
       if(ObjectCreate(0, name, OBJ_RECTANGLE, 0, times[i] - half_bar, highs[i],
                       times[i] + half_bar, lows[i]))
       {
-         ObjectSetInteger(0, name, OBJPROP_COLOR, clrDarkGreen);
+         ObjectSetInteger(0, name, OBJPROP_COLOR, buy_pullback ? clrDarkGreen : clrDarkRed);
          ObjectSetInteger(0, name, OBJPROP_FILL, true);
          ObjectSetInteger(0, name, OBJPROP_BACK, true);
          ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
@@ -246,7 +246,8 @@ bool DrawSwingDots()
                                            older, match_distance);
       if(stoch_newer < 0 || stoch_older < 0 || stoch_newer >= stoch_older)
          continue;
-      if(lows[newer] < lows[older] && stoch[stoch_newer] > stoch[stoch_older] &&
+      if(fast_ema[newer] > slow_ema[newer] &&
+         lows[newer] < lows[older] && stoch[stoch_newer] > stoch[stoch_older] &&
          atr[newer] > 0.0 && atr[newer] != EMPTY_VALUE &&
          fast_ema[newer] != EMPTY_VALUE && slow_ema[newer] != EMPTY_VALUE &&
          closes[newer] < fast_ema[newer] - atr[newer] &&
@@ -260,7 +261,9 @@ bool DrawSwingDots()
                             times[stoch_older], stoch[stoch_older],
                             times[stoch_newer], stoch[stoch_newer], clrLime);
       }
-      if(lows[newer] > lows[older] && stoch[stoch_newer] < stoch[stoch_older])
+      if(fast_ema[newer] != EMPTY_VALUE && slow_ema[newer] != EMPTY_VALUE &&
+         fast_ema[newer] > slow_ema[newer] &&
+         lows[newer] > lows[older] && stoch[stoch_newer] < stoch[stoch_older])
       {
          const string id = IntegerToString((long)times[newer]);
          DrawDivergenceLine(DIV_PREFIX + "ContinuationBullPrice_" + id, 0,
@@ -281,7 +284,8 @@ bool DrawSwingDots()
                                            older, match_distance);
       if(stoch_newer < 0 || stoch_older < 0 || stoch_newer >= stoch_older)
          continue;
-      if(highs[newer] > highs[older] && stoch[stoch_newer] < stoch[stoch_older] &&
+      if(fast_ema[newer] < slow_ema[newer] &&
+         highs[newer] > highs[older] && stoch[stoch_newer] < stoch[stoch_older] &&
          atr[newer] > 0.0 && atr[newer] != EMPTY_VALUE &&
          fast_ema[newer] != EMPTY_VALUE && slow_ema[newer] != EMPTY_VALUE &&
          closes[newer] > fast_ema[newer] + atr[newer] &&
@@ -295,7 +299,9 @@ bool DrawSwingDots()
                             times[stoch_older], stoch[stoch_older],
                             times[stoch_newer], stoch[stoch_newer], clrRed);
       }
-      if(highs[newer] < highs[older] && stoch[stoch_newer] > stoch[stoch_older])
+      if(fast_ema[newer] != EMPTY_VALUE && slow_ema[newer] != EMPTY_VALUE &&
+         fast_ema[newer] < slow_ema[newer] &&
+         highs[newer] < highs[older] && stoch[stoch_newer] > stoch[stoch_older])
       {
          const string id = IntegerToString((long)times[newer]);
          DrawDivergenceLine(DIV_PREFIX + "ContinuationBearPrice_" + id, 0,
@@ -326,7 +332,8 @@ bool DrawSwingDots()
             new_high = false;
       }
 
-      if(new_low && closes[i] < fast_ema[i] - atr[i] &&
+      if(new_low && fast_ema[i] > slow_ema[i] &&
+         closes[i] < fast_ema[i] - atr[i] &&
          closes[i] < slow_ema[i] - atr[i])
       {
          int previous = -1;
@@ -356,7 +363,8 @@ bool DrawSwingDots()
          }
       }
 
-      if(new_high && closes[i] > fast_ema[i] + atr[i] &&
+      if(new_high && fast_ema[i] < slow_ema[i] &&
+         closes[i] > fast_ema[i] + atr[i] &&
          closes[i] > slow_ema[i] + atr[i])
       {
          int previous = -1;
