@@ -1,4 +1,4 @@
-#property version "1.20"
+#property version "1.21"
 #property description "BTC scalping research: closed-bar signals, capped money risk, no averaging."
 #include <Trade/Trade.mqh>
 enum SCALP_RULE { CHANNEL_BREAKOUT=0, RANGE_REVERSION=1, TREND_PULLBACK=2, BAND_REENTRY=3, CHANNEL_FADE=4, SWEEP_REJECTION=5 };
@@ -143,6 +143,7 @@ void OnTimer(){if(VisualEnabled())RefreshVisuals();}
 void OnTradeTransaction(const MqlTradeTransaction &transaction,const MqlTradeRequest &request,const MqlTradeResult &result)
 {
  if(!VisualEnabled())return;
+ VisualStatsDirty=true;
  if(transaction.type==TRADE_TRANSACTION_DEAL_ADD)VisualDeal(transaction.deal);
  RefreshVisuals();
 }

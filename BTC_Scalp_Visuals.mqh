@@ -4,6 +4,70 @@ bool VisualEnabled()
  return InpShowChartObjects && (!MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_VISUAL_MODE));
 }
 string VisualPrefix(){return StringFormat("BTCScalp_%I64u_",InpMagic);}
+struct VisualPositionStats { ulong id;double net; };
+struct VisualPerformance { int closed;int wins;double realized;double floating;double gross_profit;double gross_loss; };
+bool VisualStatsDirty=true;
+VisualPositionStats VisualStatsPositions[];
+VisualPerformance VisualStatsCache;
+int VisualStatsDealCount=-1,VisualStatsOpenCount=-1;
+ulong VisualStatsLastDeal=0;
+int VisualPositionIndex(const ulong id)
+{
+ for(int i=0;i<ArraySize(VisualStatsPositions);++i)if(VisualStatsPositions[i].id==id)return i;
+ return -1;
+}
+bool GetVisualPerformance(VisualPerformance &stats)
+{
+ if(!HistorySelect(0,TimeCurrent()))return false;
+ int count=HistoryDealsTotal(),open_count=PositionsTotal();
+ ulong latest=count>0?HistoryDealGetTicket(count-1):0;
+ if(VisualStatsDirty || count!=VisualStatsDealCount || latest!=VisualStatsLastDeal || open_count!=VisualStatsOpenCount)
+ {
+  ArrayResize(VisualStatsPositions,0);ZeroMemory(VisualStatsCache);
+  // Identify positions opened by this EA; then include all their closing
+  // deals, including manual exits whose deal magic may be different.
+  for(int i=0;i<count;++i)
+  {
+   ulong ticket=HistoryDealGetTicket(i);
+   if(HistoryDealGetString(ticket,DEAL_SYMBOL)!=_Symbol || (ulong)HistoryDealGetInteger(ticket,DEAL_MAGIC)!=InpMagic)continue;
+   long entry=HistoryDealGetInteger(ticket,DEAL_ENTRY),type=HistoryDealGetInteger(ticket,DEAL_TYPE);
+   if((entry!=DEAL_ENTRY_IN && entry!=DEAL_ENTRY_INOUT) || (type!=DEAL_TYPE_BUY && type!=DEAL_TYPE_SELL))continue;
+   ulong id=(ulong)HistoryDealGetInteger(ticket,DEAL_POSITION_ID);
+   if(id==0 || VisualPositionIndex(id)>=0)continue;
+   int index=ArraySize(VisualStatsPositions);ArrayResize(VisualStatsPositions,index+1);
+   VisualStatsPositions[index].id=id;VisualStatsPositions[index].net=0;
+  }
+  for(int i=0;i<count;++i)
+  {
+   ulong ticket=HistoryDealGetTicket(i);
+   if(HistoryDealGetString(ticket,DEAL_SYMBOL)!=_Symbol)continue;
+   int index=VisualPositionIndex((ulong)HistoryDealGetInteger(ticket,DEAL_POSITION_ID));
+   if(index<0)continue;
+   double net=HistoryDealGetDouble(ticket,DEAL_PROFIT)+HistoryDealGetDouble(ticket,DEAL_COMMISSION)+HistoryDealGetDouble(ticket,DEAL_SWAP)+HistoryDealGetDouble(ticket,DEAL_FEE);
+   VisualStatsPositions[index].net+=net;VisualStatsCache.realized+=net;
+  }
+  for(int i=0;i<ArraySize(VisualStatsPositions);++i)
+  {
+   bool open=false;
+   for(int p=0;p<open_count;++p)
+   {
+    if(PositionGetTicket(p)>0 && (ulong)PositionGetInteger(POSITION_IDENTIFIER)==VisualStatsPositions[i].id){open=true;break;}
+   }
+   if(open)continue; // Partial exits do not count as completed trades.
+   ++VisualStatsCache.closed;double net=VisualStatsPositions[i].net;
+   if(net>0){++VisualStatsCache.wins;VisualStatsCache.gross_profit+=net;}
+   else if(net<0)VisualStatsCache.gross_loss-=net;
+  }
+  VisualStatsDealCount=count;VisualStatsLastDeal=latest;VisualStatsOpenCount=open_count;VisualStatsDirty=false;
+ }
+ stats=VisualStatsCache;stats.floating=0;
+ for(int p=0;p<PositionsTotal();++p)
+ {
+  if(PositionGetTicket(p)>0 && VisualPositionIndex((ulong)PositionGetInteger(POSITION_IDENTIFIER))>=0)
+   stats.floating+=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
+ }
+ return true;
+}
 void VisualLabel(const string suffix,const string text,const int row,const color shade)
 {
  string name=VisualPrefix()+suffix;
@@ -152,6 +216,16 @@ void RefreshVisuals()
   }
   else{ObjectDelete(0,VisualPrefix()+"entry");ObjectDelete(0,VisualPrefix()+"sl");ObjectDelete(0,VisualPrefix()+"tp");}
  }
+ VisualPerformance performance;
+ if(GetVisualPerformance(performance))
+ {
+  double total=performance.realized+performance.floating;
+  VisualLabel("pnl",StringFormat("EA history P/L now %.2f USD | Realized %.2f | Floating %.2f",total,performance.realized,performance.floating),6,total>=0?clrLime:clrTomato);
+  string win_rate=performance.closed>0?DoubleToString(100.0*performance.wins/performance.closed,1)+"%":"N/A";
+  string factor=performance.gross_loss>0?DoubleToString(performance.gross_profit/performance.gross_loss,2):performance.gross_profit>0?"Infinity (no losses)":"N/A";
+  VisualLabel("performance",StringFormat("Closed trades %d | Win rate %s | Profit factor %s (closed net results)",performance.closed,win_rate,factor),7,clrWhite);
+ }
+ else{VisualLabel("pnl","EA performance: history unavailable",6,clrSilver);VisualLabel("performance","",7,clrSilver);}
  static bool restored=false;if(!restored){RestoreVisualDeals();restored=true;}
  ChartRedraw();
 }

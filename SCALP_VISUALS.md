@@ -17,6 +17,15 @@ to show objects; disabling it or removing the EA removes its own objects.
   on the first available tick at/after it; SL/TP can close earlier.
 - Dashboard: broker time, entry window, daily count, risk, RR, spread,
   closed-bar ATR, provisional candidate and current blocking condition.
+- Cumulative EA-history P/L now (realized plus floating), realized and
+  floating separately, closed-trade count, win rate and profit factor.
+  Scope is this symbol and positions opened with this EA's magic, using
+  available broker history, including recorded commission/swap/fees.
+  Manual exits of those positions are included; partial fills/exits
+  are grouped by position and count once only after fully closing.
+  Win rate includes breakeven trades in its denominator. Profit factor
+  uses positive/negative completed-position net outcomes. No closed
+  trades shows N/A; profits without losses shows Infinity, not zero.
 
 The display refreshes every5 seconds. A forming candidate is not a
 trade promise: candle-close confirmation and all entry checks are
