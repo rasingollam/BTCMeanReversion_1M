@@ -1,4 +1,4 @@
-#property version "1.00"
+#property version "1.10"
 #property description "BTC scalping research: closed-bar signals, capped money risk, no averaging."
 #include <Trade/Trade.mqh>
 enum SCALP_RULE { CHANNEL_BREAKOUT=0, RANGE_REVERSION=1, TREND_PULLBACK=2, BAND_REENTRY=3, CHANNEL_FADE=4, SWEEP_REJECTION=5 };
@@ -10,12 +10,18 @@ input double InpMinATRSpread=8.0;
 input int InpMaxHoldMinutes=45;
 input bool InpDemoOnly=true;
 input ulong InpMagic=109001;
+input bool InpUseTimeWindow=true;
+input int InpStartHour=13; // MT5 broker-server hour, inclusive
+input int InpEndHour=17; // MT5 broker-server hour, exclusive; 24 allowed
+input int InpMaxTradesPerDay=2; // Hard ceiling: at most two successful entries
 CTrade trade;
 int atrH,fastH,slowH,bandsH,rsiH,adxH;
 datetime lastBar=0;
 int OnInit()
 {
  if(InpRiskMoney<=0 || InpRR<=0 || InpStopATR<=0 || InpMinATRSpread<=0 || InpMaxHoldMinutes<1) return INIT_PARAMETERS_INCORRECT;
+ if(InpMaxTradesPerDay<1 || InpMaxTradesPerDay>2 || InpStartHour<0 || InpStartHour>23 ||
+    InpEndHour<0 || InpEndHour>24 || (InpUseTimeWindow && InpStartHour==InpEndHour)) return INIT_PARAMETERS_INCORRECT;
  if(InpDemoOnly && !MQLInfoInteger(MQL_TESTER) && AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO) return INIT_FAILED;
  atrH=iATR(_Symbol,PERIOD_CURRENT,14);
  fastH=iMA(_Symbol,PERIOD_CURRENT,20,0,MODE_EMA,PRICE_CLOSE);
@@ -33,8 +39,36 @@ bool Read(const int handle,const int buffer,double &values[])
  ArraySetAsSeries(values,true);
  return CopyBuffer(handle,buffer,1,3,values)==3 && values[0]!=EMPTY_VALUE && values[2]!=EMPTY_VALUE;
 }
+bool EntryWindowOpen()
+{
+ if(!InpUseTimeWindow)return true;
+ MqlDateTime clock;TimeToStruct(TimeCurrent(),clock);
+ if(InpStartHour<InpEndHour)return clock.hour>=InpStartHour && clock.hour<InpEndHour;
+ return clock.hour>=InpStartHour || clock.hour<InpEndHour;
+}
+int EntriesToday()
+{
+ // Broker-date history survives EA/chart/terminal restarts. Count orders,
+ // not deals, so partial fills of a single entry consume one slot.
+ MqlDateTime clock;TimeToStruct(TimeCurrent(),clock);clock.hour=0;clock.min=0;clock.sec=0;
+ if(!HistorySelect(StructToTime(clock),TimeCurrent()))return InpMaxTradesPerDay;
+ ulong orders[];int count=0;
+ for(int i=0;i<HistoryDealsTotal();++i)
+ {
+  ulong deal=HistoryDealGetTicket(i);
+  if(deal==0 || HistoryDealGetString(deal,DEAL_SYMBOL)!=_Symbol ||
+     (ulong)HistoryDealGetInteger(deal,DEAL_MAGIC)!=InpMagic)continue;
+  long entry=HistoryDealGetInteger(deal,DEAL_ENTRY);
+  if(entry!=DEAL_ENTRY_IN && entry!=DEAL_ENTRY_INOUT)continue;
+  ulong order=(ulong)HistoryDealGetInteger(deal,DEAL_ORDER);bool seen=false;
+  for(int j=0;j<count;++j)if(orders[j]==order){seen=true;break;}
+  if(!seen){ArrayResize(orders,count+1);orders[count++]=order;}
+ }
+ return count;
+}
 void Open(const bool buy,const double atr)
 {
+ if(!EntryWindowOpen() || EntriesToday()>=InpMaxTradesPerDay)return;
  if(PositionSelect(_Symbol) || AccountInfoString(ACCOUNT_CURRENCY)!="USD") return;
  if(InpDemoOnly && !MQLInfoInteger(MQL_TESTER) && AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO) return;
  MqlTick tick;if(!SymbolInfoTick(_Symbol,tick))return;
