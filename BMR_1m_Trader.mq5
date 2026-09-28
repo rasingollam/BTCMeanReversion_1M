@@ -9,6 +9,7 @@ input int InpLookbackBars = 300;
 input double InpRiskMoney = 10.0; // Risk in USD, excluding costs and slippage
 input double InpRiskReward = 1.0; // Reward divided by risk
 input bool InpEnableTrailingStop = false; // Enable fast EMA candle-close trailing exit
+input bool InpReverseDirection = false; // Reverse entries and swap normal SL/TP levels
 input ulong InpMagicNumber = 105003;
 input int InpStochKPeriod = 5;
 input int InpStochDPeriod = 3;
@@ -87,7 +88,7 @@ double NearestSwing(const bool buy, const MqlRates &bars[], const int count)
    return 0.0;
 }
 
-void EnterTrade(const bool buy, const double swing)
+void EnterTrade(bool buy, const double swing)
 {
    if(PositionSelect(_Symbol) || swing <= 0)
       return;
@@ -103,9 +104,9 @@ void EnterTrade(const bool buy, const double swing)
    const double tick_size = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    if(tick_size <= 0)
       return;
-   const double entry = buy ? tick.ask : tick.bid;
+   double entry = buy ? tick.ask : tick.bid;
    const double raw_stop = buy ? swing - spread : swing + spread;
-   const double stop = NormalizeDouble(
+   double stop = NormalizeDouble(
       (buy ? MathFloor(raw_stop / tick_size) : MathCeil(raw_stop / tick_size)) *
       tick_size, _Digits);
    const double distance = buy ? entry - stop : stop - entry;
@@ -117,9 +118,23 @@ void EnterTrade(const bool buy, const double swing)
    }
    const double raw_tp = buy ? entry + distance * InpRiskReward
                             : entry - distance * InpRiskReward;
-   const double tp = NormalizeDouble(MathRound(raw_tp / tick_size) * tick_size, _Digits);
+   double tp = NormalizeDouble(MathRound(raw_tp / tick_size) * tick_size, _Digits);
    if(buy ? tp <= tick.bid + min_stop : tp >= tick.ask - min_stop)
       return;
+   if(InpReverseDirection)
+   {
+      buy = !buy;
+      entry = buy ? tick.ask : tick.bid;
+      const double normal_stop = stop;
+      stop = tp;
+      tp = normal_stop;
+      if((buy && (stop >= tick.bid - min_stop || tp <= tick.bid + min_stop)) ||
+         (!buy && (stop <= tick.ask + min_stop || tp >= tick.ask - min_stop)))
+      {
+         Print("Entry skipped: reversed stop/target levels are too close to market.");
+         return;
+      }
+   }
    const double min_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    const double max_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
    const double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
