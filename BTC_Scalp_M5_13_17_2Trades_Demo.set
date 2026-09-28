@@ -1,0 +1,13 @@
+InpRule=2
+InpRiskMoney=10.0
+InpRR=1.5
+InpStopATR=1.5
+InpMinATRSpread=8.0
+InpMaxHoldMinutes=45
+InpDemoOnly=true
+InpMagic=109001
+InpUseTimeWindow=true
+InpStartHour=13
+InpEndHour=17
+InpMaxTradesPerDay=2
+InpShowChartObjects=false

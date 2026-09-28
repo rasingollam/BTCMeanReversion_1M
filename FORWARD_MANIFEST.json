@@ -1,0 +1,22 @@
+{
+  "recorded_utc": "2026-09-28T18:27:02.072740+00:00",
+  "forward_start_utc": "2026-09-28T18:24:34Z",
+  "magic": 105020,
+  "rules": "BTCUSD H1 20-bar breakout; EMA50/200 alignment; five-bar EMA200 slope; 2 ATR14 stop reference plus spread; 2:1 RR; USD 10 risk",
+  "minimum_weeks": 8,
+  "minimum_closed_trades": 50,
+  "files": {
+    "ea": {
+      "workspace": "BMR_1m_Trader.ex5",
+      "deployed": "logs/test-terminal/MQL5/Experts/BMR_1m_Trader.ex5",
+      "sha256": "816297c157d0a3986c090b5aa4117dc738d01f7ab7c7a15945207451df4a10a1",
+      "matches": true
+    },
+    "preset": {
+      "workspace": "BTCUSD_H1_Breakout_Demo.set",
+      "deployed": "logs/test-terminal/MQL5/Presets/BTCUSD_H1_Breakout_Demo.set",
+      "sha256": "4ba49e69cc9ac36e17bf2f86c1fe0c16262d2d7934ec811dd796e5b9650e0aab",
+      "matches": true
+    }
+  }
+}
