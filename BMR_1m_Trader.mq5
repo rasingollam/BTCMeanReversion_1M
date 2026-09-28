@@ -1,4 +1,4 @@
-#property version "1.00"
+#property version "1.10"
 #property description "Trades slow-EMA pullbacks with money risk and a fast-EMA candle-close exit."
 #include <Trade/Trade.mqh>
 
@@ -7,23 +7,35 @@ input int InpSlowEMAPeriod = 50;
 input int InpSwingStrength = 2;
 input int InpLookbackBars = 300;
 input double InpRiskMoney = 10.0; // Risk in USD, excluding costs and slippage
-input double InpRiskReward = 3.0; // Reward divided by risk
+input double InpRiskReward = 1.0; // Reward divided by risk
+input bool InpEnableTrailingStop = false; // Enable fast EMA candle-close trailing exit
 input ulong InpMagicNumber = 105003;
+input int InpStochKPeriod = 5;
+input int InpStochDPeriod = 3;
+input int InpStochSlowing = 3;
+input double InpOversold = 20.0;   // Buy only below this %K value
+input double InpOverbought = 80.0; // Sell only above this %K value
 
 CTrade Trade;
 int FastHandle = INVALID_HANDLE;
 int SlowHandle = INVALID_HANDLE;
+int StochHandle = INVALID_HANDLE;
 datetime LastBar = 0;
 
 int OnInit()
 {
    if(InpFastEMAPeriod < 1 || InpSlowEMAPeriod < 1 || InpSwingStrength < 1 ||
       InpLookbackBars < 2 * InpSwingStrength + 3 ||
-      InpRiskMoney <= 0 || InpRiskReward <= 0)
+      InpRiskMoney <= 0 || InpRiskReward <= 0 ||
+      InpStochKPeriod < 1 || InpStochDPeriod < 1 || InpStochSlowing < 1 ||
+      InpOversold <= 0 || InpOverbought >= 100 || InpOversold >= InpOverbought)
       return INIT_PARAMETERS_INCORRECT;
    FastHandle = iMA(_Symbol, PERIOD_CURRENT, InpFastEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
    SlowHandle = iMA(_Symbol, PERIOD_CURRENT, InpSlowEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
-   if(FastHandle == INVALID_HANDLE || SlowHandle == INVALID_HANDLE)
+   StochHandle = iStochastic(_Symbol, PERIOD_CURRENT, InpStochKPeriod,
+                             InpStochDPeriod, InpStochSlowing, MODE_SMA, STO_LOWHIGH);
+   if(FastHandle == INVALID_HANDLE || SlowHandle == INVALID_HANDLE ||
+      StochHandle == INVALID_HANDLE)
       return INIT_FAILED;
    Trade.SetExpertMagicNumber(InpMagicNumber);
    Trade.SetTypeFillingBySymbol(_Symbol);
@@ -43,7 +55,8 @@ bool ManagePosition(const double last_close, const double fast_ema)
       found = true;
       const bool buy = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY;
       // Virtual EMA trailing exit: wick crossings do not trigger this exit.
-      if((buy && last_close < fast_ema) || (!buy && last_close > fast_ema))
+      if(InpEnableTrailingStop &&
+         ((buy && last_close < fast_ema) || (!buy && last_close > fast_ema)))
       {
          if(!Trade.PositionClose(ticket) ||
             Trade.ResultRetcode() != TRADE_RETCODE_DONE)
@@ -149,9 +162,16 @@ void OnTick()
       CopyBuffer(FastHandle, 0, 0, count, fast) != count ||
       CopyBuffer(SlowHandle, 0, 0, count, slow) != count)
       return;
-   LastBar = current;
    if(ManagePosition(bars[1].close, fast[1]) || PositionSelect(_Symbol))
+   {
+      LastBar = current;
       return;
+   }
+   double stoch[];
+   if(CopyBuffer(StochHandle, 0, 1, 1, stoch) != 1 ||
+      stoch[0] == EMPTY_VALUE)
+      return;
+   LastBar = current;
    int pending_buy = -1, pending_sell = -1;
    for(int i = count - 1; i >= 1; --i)
    {
@@ -163,13 +183,13 @@ void OnTick()
       if(!bearish) pending_sell = -1;
       if(pending_buy >= 0 && bars[i].close > bars[pending_buy].open)
       {
-         if(i == 1)
+         if(i == 1 && stoch[0] < InpOversold)
             EnterTrade(true, NearestSwing(true, bars, count));
          pending_buy = -1;
       }
       else if(pending_sell >= 0 && bars[i].close < bars[pending_sell].open)
       {
-         if(i == 1)
+         if(i == 1 && stoch[0] > InpOverbought)
             EnterTrade(false, NearestSwing(false, bars, count));
          pending_sell = -1;
       }
@@ -185,4 +205,5 @@ void OnDeinit(const int reason)
 {
    if(FastHandle != INVALID_HANDLE) IndicatorRelease(FastHandle);
    if(SlowHandle != INVALID_HANDLE) IndicatorRelease(SlowHandle);
+   if(StochHandle != INVALID_HANDLE) IndicatorRelease(StochHandle);
 }
