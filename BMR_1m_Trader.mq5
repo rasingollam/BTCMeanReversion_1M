@@ -1,4 +1,4 @@
-#property version "1.10"
+#property version "1.20"
 #property description "Trades slow-EMA pullbacks with money risk and a fast-EMA candle-close exit."
 #include <Trade/Trade.mqh>
 
@@ -17,11 +17,15 @@ input int InpStochDPeriod = 3;
 input int InpStochSlowing = 3;
 input double InpOversold = 40.0;   // Buy only below this %K value
 input double InpOverbought = 60.0; // Sell only above this %K value
+input bool InpUseH1TrendFilter = false; // Require closed H1 EMA alignment and slopes
+input bool InpUseStochRecovery = false; // Cross out of oversold/overbought at entry
 
 CTrade Trade;
 int FastHandle = INVALID_HANDLE;
 int SlowHandle = INVALID_HANDLE;
 int StochHandle = INVALID_HANDLE;
+int H1FastHandle = INVALID_HANDLE;
+int H1SlowHandle = INVALID_HANDLE;
 datetime LastBar = 0;
 
 int OnInit()
@@ -36,6 +40,13 @@ int OnInit()
    SlowHandle = iMA(_Symbol, PERIOD_CURRENT, InpSlowEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
    StochHandle = iStochastic(_Symbol, PERIOD_CURRENT, InpStochKPeriod,
                              InpStochDPeriod, InpStochSlowing, MODE_SMA, STO_LOWHIGH);
+   if(InpUseH1TrendFilter)
+   {
+      H1FastHandle = iMA(_Symbol, PERIOD_H1, InpFastEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+      H1SlowHandle = iMA(_Symbol, PERIOD_H1, InpSlowEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+      if(H1FastHandle == INVALID_HANDLE || H1SlowHandle == INVALID_HANDLE)
+         return INIT_FAILED;
+   }
    if(FastHandle == INVALID_HANDLE || SlowHandle == INVALID_HANDLE ||
       StochHandle == INVALID_HANDLE)
       return INIT_FAILED;
@@ -190,9 +201,32 @@ void OnTick()
       return;
    }
    double stoch[];
-   if(CopyBuffer(StochHandle, 0, 1, 1, stoch) != 1 ||
-      stoch[0] == EMPTY_VALUE)
+   ArraySetAsSeries(stoch, true);
+   if(CopyBuffer(StochHandle, 0, 1, 2, stoch) != 2 ||
+      stoch[0] == EMPTY_VALUE || stoch[1] == EMPTY_VALUE)
       return;
+   bool allow_buy = true, allow_sell = true;
+   if(InpUseH1TrendFilter)
+   {
+      double h1fast[], h1slow[];
+      ArraySetAsSeries(h1fast, true);
+      ArraySetAsSeries(h1slow, true);
+      if(CopyBuffer(H1FastHandle, 0, 1, 2, h1fast) != 2 ||
+         CopyBuffer(H1SlowHandle, 0, 1, 2, h1slow) != 2 ||
+         h1fast[0] == EMPTY_VALUE || h1fast[1] == EMPTY_VALUE ||
+         h1slow[0] == EMPTY_VALUE || h1slow[1] == EMPTY_VALUE)
+         return;
+      allow_buy = h1fast[0] > h1slow[0] &&
+                  h1fast[0] > h1fast[1] && h1slow[0] > h1slow[1];
+      allow_sell = h1fast[0] < h1slow[0] &&
+                   h1fast[0] < h1fast[1] && h1slow[0] < h1slow[1];
+   }
+   const bool stoch_buy = InpUseStochRecovery
+      ? stoch[1] < InpOversold && stoch[0] >= InpOversold
+      : stoch[0] < InpOversold;
+   const bool stoch_sell = InpUseStochRecovery
+      ? stoch[1] > InpOverbought && stoch[0] <= InpOverbought
+      : stoch[0] > InpOverbought;
    LastBar = current;
    int pending_buy = -1, pending_sell = -1;
    for(int i = count - 1; i >= 1; --i)
@@ -205,13 +239,13 @@ void OnTick()
       if(!bearish) pending_sell = -1;
       if(pending_buy >= 0 && bars[i].close > bars[pending_buy].open)
       {
-         if(i == 1 && stoch[0] < InpOversold)
+         if(i == 1 && stoch_buy && allow_buy)
             EnterTrade(true, NearestSwing(true, bars, count));
          pending_buy = -1;
       }
       else if(pending_sell >= 0 && bars[i].close < bars[pending_sell].open)
       {
-         if(i == 1 && stoch[0] > InpOverbought)
+         if(i == 1 && stoch_sell && allow_sell)
             EnterTrade(false, NearestSwing(false, bars, count));
          pending_sell = -1;
       }
@@ -228,4 +262,6 @@ void OnDeinit(const int reason)
    if(FastHandle != INVALID_HANDLE) IndicatorRelease(FastHandle);
    if(SlowHandle != INVALID_HANDLE) IndicatorRelease(SlowHandle);
    if(StochHandle != INVALID_HANDLE) IndicatorRelease(StochHandle);
+   if(H1FastHandle != INVALID_HANDLE) IndicatorRelease(H1FastHandle);
+   if(H1SlowHandle != INVALID_HANDLE) IndicatorRelease(H1SlowHandle);
 }
