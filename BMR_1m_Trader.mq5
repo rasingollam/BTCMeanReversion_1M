@@ -9,13 +9,13 @@ input int InpLookbackBars = 300;
 input double InpRiskMoney = 10.0; // Risk in USD, excluding costs and slippage
 input double InpRiskReward = 1.0; // Reward divided by risk
 input bool InpEnableTrailingStop = false; // Enable fast EMA candle-close trailing exit
-input bool InpReverseDirection = false; // Reverse entries and swap normal SL/TP levels
+input bool InpReverseDirection = false; // Reverse entries with RR from actual reversed entry
 input ulong InpMagicNumber = 105003;
 input int InpStochKPeriod = 5;
 input int InpStochDPeriod = 3;
 input int InpStochSlowing = 3;
-input double InpOversold = 20.0;   // Buy only below this %K value
-input double InpOverbought = 80.0; // Sell only above this %K value
+input double InpOversold = 40.0;   // Buy only below this %K value
+input double InpOverbought = 60.0; // Sell only above this %K value
 
 CTrade Trade;
 int FastHandle = INVALID_HANDLE;
@@ -125,9 +125,13 @@ void EnterTrade(bool buy, const double swing)
    {
       buy = !buy;
       entry = buy ? tick.ask : tick.bid;
-      const double normal_stop = stop;
       stop = tp;
-      tp = normal_stop;
+      const double reversed_distance = buy ? entry - stop : stop - entry;
+      if(reversed_distance <= 0)
+         return;
+      const double reversed_tp = buy ? entry + reversed_distance * InpRiskReward
+                                    : entry - reversed_distance * InpRiskReward;
+      tp = NormalizeDouble(MathRound(reversed_tp / tick_size) * tick_size, _Digits);
       if((buy && (stop >= tick.bid - min_stop || tp <= tick.bid + min_stop)) ||
          (!buy && (stop <= tick.ask + min_stop || tp >= tick.ask - min_stop)))
       {
