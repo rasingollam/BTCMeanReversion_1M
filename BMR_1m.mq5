@@ -423,7 +423,7 @@ void DrawPullbacks(const bool reset)
          const int half_bar = MathMax(1, PeriodSeconds(PERIOD_CURRENT) / 2);
          if(ObjectFind(0, name) < 0 &&
             ObjectCreate(0, name, OBJ_RECTANGLE, 0,
-                         bars[setup].time - half_bar, bars[setup].open,
+                         bars[setup].time - half_bar, bars[setup].close,
                          bars[confirmed].time + half_bar, bars[confirmed].close))
          {
             ObjectSetInteger(0, name, OBJPROP_COLOR, buy ? clrDarkGreen : clrDarkRed);
