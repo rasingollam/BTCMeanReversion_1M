@@ -15,7 +15,7 @@
 
 input group "Indicators"
 input int InpFastEMAPeriod = 10;  // Fast EMA period
-input int InpSlowEMAPeriod = 50;  // Slow EMA period (width 2)
+input int InpSlowEMAPeriod = 20;  // Slow EMA period (width 2)
 input int InpDisplayBars   = 300; // Number of bars to draw
 input int InpATRPeriod     = 14;  // ATR period for divergence filter
 input int InpStochKPeriod  = 5;   // Stochastic %K period
