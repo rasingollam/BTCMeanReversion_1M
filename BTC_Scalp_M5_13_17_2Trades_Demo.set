@@ -10,3 +10,4 @@ InpUseTimeWindow=true
 InpStartHour=13
 InpEndHour=17
 InpMaxTradesPerDay=2
+InpShowChartObjects=false

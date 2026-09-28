@@ -1,4 +1,4 @@
-#property version "1.10"
+#property version "1.20"
 #property description "BTC scalping research: closed-bar signals, capped money risk, no averaging."
 #include <Trade/Trade.mqh>
 enum SCALP_RULE { CHANNEL_BREAKOUT=0, RANGE_REVERSION=1, TREND_PULLBACK=2, BAND_REENTRY=3, CHANNEL_FADE=4, SWEEP_REJECTION=5 };
@@ -14,9 +14,11 @@ input bool InpUseTimeWindow=true;
 input int InpStartHour=13; // MT5 broker-server hour, inclusive
 input int InpEndHour=17; // MT5 broker-server hour, exclusive; 24 allowed
 input int InpMaxTradesPerDay=2; // Hard ceiling: at most two successful entries
+input bool InpShowChartObjects=false; // Optional dashboard, signals and trade levels
 CTrade trade;
 int atrH,fastH,slowH,bandsH,rsiH,adxH;
 datetime lastBar=0;
+#include "BTC_Scalp_Visuals.mqh"
 int OnInit()
 {
  if(InpRiskMoney<=0 || InpRR<=0 || InpStopATR<=0 || InpMinATRSpread<=0 || InpMaxHoldMinutes<1) return INIT_PARAMETERS_INCORRECT;
@@ -32,6 +34,7 @@ int OnInit()
  if(atrH==INVALID_HANDLE || fastH==INVALID_HANDLE || slowH==INVALID_HANDLE || bandsH==INVALID_HANDLE || rsiH==INVALID_HANDLE || adxH==INVALID_HANDLE) return INIT_FAILED;
  trade.SetExpertMagicNumber(InpMagic);trade.SetTypeFillingBySymbol(_Symbol);
  lastBar=iTime(_Symbol,PERIOD_CURRENT,0);
+ if(VisualEnabled()){EventSetTimer(5);RefreshVisuals();}
  return INIT_SUCCEEDED;
 }
 bool Read(const int handle,const int buffer,double &values[])
@@ -133,10 +136,19 @@ void OnTick()
   buy=fast[0]>slow[0] && slow[0]>slow[2] && bars[2].close<=fast[1] && bars[1].close>fast[0];
   sell=fast[0]<slow[0] && slow[0]<slow[2] && bars[2].close>=fast[1] && bars[1].close<fast[0];
  }
+ if(buy || sell)VisualSignal(buy,bars[1].time,buy?bars[1].low:bars[1].high);
  if(buy)Open(true,atr[0]);else if(sell)Open(false,atr[0]);
+}
+void OnTimer(){if(VisualEnabled())RefreshVisuals();}
+void OnTradeTransaction(const MqlTradeTransaction &transaction,const MqlTradeRequest &request,const MqlTradeResult &result)
+{
+ if(!VisualEnabled())return;
+ if(transaction.type==TRADE_TRANSACTION_DEAL_ADD)VisualDeal(transaction.deal);
+ RefreshVisuals();
 }
 void OnDeinit(const int reason)
 {
+ EventKillTimer();ObjectsDeleteAll(0,VisualPrefix());
  IndicatorRelease(atrH);IndicatorRelease(fastH);IndicatorRelease(slowH);
  IndicatorRelease(bandsH);IndicatorRelease(rsiH);IndicatorRelease(adxH);
 }
